@@ -1,0 +1,6 @@
+extends: model_configs_coco4000_512_iclr_fusion_baselines.yaml
+
+# Qwen3's existing ICLR risk uses the exact same 512-token generations as GF.
+# Extract only the two missing baselines for its isolated comparison directory.
+run:
+  extraction_mode: baseline_only

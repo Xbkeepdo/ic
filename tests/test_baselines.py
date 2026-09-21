@@ -32,10 +32,13 @@ from features.baseline import (
     HalLocObjectDetector,
     attach_baseline,
     baseline_extraction_requirements,
+    build_instruction_lens_probability_cache,
     compute_metatoken_features,
     compute_metatoken_features_from_stats,
+    compute_instruction_lens_features,
     compute_projectaway_internal_confidence,
     compute_svar_features,
+    compute_token_grounding_features,
     make_baseline_record,
     normalize_baseline_methods,
     resize_attention_preserve_mass,
@@ -55,6 +58,11 @@ class BaselineFeatureTests(unittest.TestCase):
         self.assertFalse(projectaway.logits)
         self.assertTrue(projectaway.patch_hidden_states)
         self.assertFalse(projectaway.response_hidden_states)
+        inslen = baseline_extraction_requirements(["instruct_lens"])
+        self.assertTrue(inslen.token_hidden_states)
+        self.assertTrue(inslen.patch_hidden_states)
+        self.assertTrue(inslen.instruction_hidden_states)
+        self.assertFalse(inslen.logits)
 
     def test_runtime_builds_all_baselines_from_shared_outputs(self):
         class _Wrapper:
@@ -68,7 +76,15 @@ class BaselineFeatureTests(unittest.TestCase):
 
         self.assertEqual(
             set(normalize_baseline_methods("all")),
-            {"metatoken", "svar", "dhcp", "projectaway", "halloc"},
+            {
+                "metatoken",
+                "svar",
+                "dhcp",
+                "projectaway",
+                "halloc",
+                "token_grounding",
+                "instruct_lens",
+            },
         )
         response_ids = [1, 2, 3]
         compact = {
@@ -109,7 +125,7 @@ class BaselineFeatureTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             with BaselineRuntime(
                 wrapper=_Wrapper(),
-                methods="all",
+                methods=("metatoken", "svar", "dhcp", "projectaway", "halloc"),
                 baseline_dir=directory,
                 config={"dhcp": {"shard_size": 8}},
                 device="cpu",
@@ -137,7 +153,8 @@ class BaselineFeatureTests(unittest.TestCase):
             self.assertEqual(len(records), 2)
             for record in records:
                 validate_baseline_record(
-                    record, required=normalize_baseline_methods("all")
+                    record,
+                    required=("metatoken", "svar", "dhcp", "projectaway", "halloc"),
                 )
                 self.assertEqual(
                     float(record["baselines"]["metatoken"]["vector"][1]), 2.0
@@ -168,6 +185,98 @@ class BaselineFeatureTests(unittest.TestCase):
                 records[0]["baselines"]["dhcp"]["shard_reference"]
             )
             self.assertEqual(item.shape[-2:], (12, 12))
+
+    def test_token_grounding_concatenates_ads_and_cgc_layers(self):
+        attention = torch.rand(4, 2, 16)
+        token_hidden = torch.rand(4, 8)
+        patch_hidden = torch.rand(4, 16, 8)
+        features = compute_token_grounding_features(
+            text_to_patch_attn=attention,
+            token_hidden_states=token_hidden,
+            patch_hidden_states=patch_hidden,
+            visual_grid=(4, 4),
+        )
+        self.assertEqual(features.ads_per_layer.shape, (4,))
+        self.assertEqual(features.cgc_per_layer.shape, (4,))
+        self.assertEqual(features.vector.shape, (8,))
+        np.testing.assert_allclose(features.vector[:4], features.ads_per_layer)
+        np.testing.assert_allclose(features.vector[4:], features.cgc_per_layer)
+
+    def test_instruction_lens_matches_repository_weighting(self):
+        generator = torch.Generator().manual_seed(7)
+        output_layer = nn.Linear(8, 32, bias=False)
+        instruction = torch.randn(4, 6, 8, generator=generator)
+        token = torch.randn(4, 8, generator=generator)
+        patches = torch.randn(4, 16, 8, generator=generator)
+        features = compute_instruction_lens_features(
+            output_layer=output_layer,
+            instruction_hidden_states=instruction,
+            token_hidden_states=token,
+            patch_hidden_states=patches,
+            target_token_id=3,
+            instruction_layer=1,
+            object_layer=3,
+            visual_layer=2,
+            k=16,
+            m=4,
+            tau=10.0,
+            alpha=2.0,
+            w=0.4,
+        )
+        self.assertAlmostEqual(
+            features.score,
+            0.6 * features.s_cls + 0.4 * features.s_ccs,
+            places=7,
+        )
+        self.assertEqual(features.instruction_layer, 1)
+        self.assertEqual(features.object_layer, 3)
+        self.assertEqual(features.visual_layer, 2)
+        self.assertTrue(math.isfinite(features.score))
+        cache = build_instruction_lens_probability_cache(
+            output_layer=output_layer,
+            instruction_hidden_states=instruction,
+            patch_hidden_states=patches,
+            target_token_ids=[3, 5],
+            instruction_layer=1,
+            visual_layer=2,
+            tau=10.0,
+        )
+        cached = compute_instruction_lens_features(
+            output_layer=output_layer,
+            instruction_hidden_states=instruction,
+            token_hidden_states=token,
+            patch_hidden_states=patches,
+            target_token_id=3,
+            instruction_layer=1,
+            object_layer=3,
+            visual_layer=2,
+            k=16,
+            m=4,
+            tau=10.0,
+            alpha=2.0,
+            w=0.4,
+            probability_cache=cache,
+        )
+        self.assertAlmostEqual(features.score, cached.score, places=10)
+
+        final_state = torch.randn(8, generator=generator)
+        final_norm = compute_instruction_lens_features(
+            output_layer=output_layer,
+            instruction_hidden_states=instruction,
+            token_hidden_states=token,
+            patch_hidden_states=patches,
+            target_token_id=3,
+            instruction_layer=1,
+            object_layer=4,
+            visual_layer=2,
+            object_hidden_state=final_state,
+            probability_cache=cache,
+        )
+        self.assertEqual(final_norm.object_layer, 4)
+        self.assertEqual(
+            final_norm.object_state_definition,
+            "final_decoder_norm",
+        )
 
     def test_metatoken_matches_hand_computed_terms_and_compact_stats(self):
         # The object starts with a non-top-1 token so Eq. 11 is non-zero.

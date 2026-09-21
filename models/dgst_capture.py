@@ -575,6 +575,23 @@ def hidden_states_from_layer_outputs(
     return token_states, patch_states
 
 
+def positions_hidden_states_from_layer_outputs(
+    layer_outputs: Sequence[torch.Tensor],
+    *,
+    positions: Sequence[int],
+) -> torch.Tensor:
+    """Extract raw post-layer residual states at shared sequence positions."""
+    if not layer_outputs:
+        raise ValueError("No decoder layer outputs were captured.")
+    selected = [int(position) for position in positions]
+    if not selected:
+        raise ValueError("At least one sequence position is required.")
+    return torch.stack(
+        [state[0, selected, :] for state in layer_outputs],
+        dim=0,
+    )
+
+
 def final_normalized_hidden_slice(
     *,
     model: Any,
@@ -1254,6 +1271,26 @@ def hidden_states_from_captures(
         token_states.append(layer_hidden[0, int(token_position), :])
         patch_states.append(layer_hidden[0, int(visual_start) : int(visual_end), :])
     return torch.stack(token_states, dim=0), torch.stack(patch_states, dim=0)
+
+
+def positions_hidden_states_from_captures(
+    captures: Sequence[dict[str, Any]],
+    *,
+    positions: Sequence[int],
+) -> torch.Tensor:
+    """Extract reconstructed post-layer residual states at shared positions."""
+    selected = [int(position) for position in positions]
+    if not selected:
+        raise ValueError("At least one sequence position is required.")
+    states = []
+    for index, capture in enumerate(captures):
+        layer_hidden = (
+            captures[index + 1]["h_prev"]
+            if index + 1 < len(captures)
+            else capture["h_mid"] + capture["o_ffn"]
+        )
+        states.append(layer_hidden[0, selected, :])
+    return torch.stack(states, dim=0)
 
 
 def embedding_for_token(

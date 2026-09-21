@@ -1,0 +1,17 @@
+extends: model_configs_unified.yaml
+
+# Re-extract ICLR risk on the exact COCO4000-512 generations used by GF ENDAC.
+# Keep this experiment isolated from the active unified profile.
+run:
+  extraction_mode: all
+
+feature_extraction:
+  ads_cgc:
+    enabled: false
+  baseline:
+    enabled: true
+    methods: [metatoken, svar]
+
+training:
+  baseline:
+    methods: [metatoken, svar]

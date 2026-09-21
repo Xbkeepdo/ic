@@ -314,6 +314,7 @@ def compute_dgst_t_batch_from_captures(
     captures: Sequence[dict[str, Any]],
     visual_start: int,
     visual_end: int,
+    visual_grid: Sequence[int] | None = None,
     image_token_id: int,
     target_token_ids: Sequence[int],
     prediction_positions: Sequence[int],
@@ -362,6 +363,8 @@ def compute_dgst_t_batch_from_captures(
     four_gate_support_modes: Sequence[str] | str | None = None,
     four_gate_source_tau_values: Sequence[float] | float | None = None,
     four_gate_transport_top_k_values: Sequence[int] | int | None = None,
+    four_gate_spatial_cost_semantic_weight: float = 1.0,
+    four_gate_spatial_cost_distance_weight: float = 1.0,
     four_gate_compute_capped_topmass_085: bool = False,
     four_gate_capped_topmass_alphas: Sequence[float] | float | None = None,
     compute_prompt_cafe: bool = False,
@@ -407,6 +410,7 @@ def compute_dgst_t_batch_from_captures(
             captures=captures,
             visual_start=int(visual_start),
             visual_end=int(visual_end),
+            visual_grid=visual_grid,
             prompt_positions=prompt_positions,
             target_token_ids=target_ids,
             prediction_positions=pred_positions,
@@ -417,11 +421,18 @@ def compute_dgst_t_batch_from_captures(
             mad_epsilon=float(relative_vll_mad_epsilon),
             cost_mode=cost_mode,
             cost_modes=four_gate_cost_modes,
+            source_distribution_mode=source_distribution_mode,
             enabled_methods=four_gate_methods,
             compute_dual_scope=bool(compute_dual_scope),
             support_modes=four_gate_support_modes,
             source_tau_values=four_gate_source_tau_values,
             transport_top_k_values=four_gate_transport_top_k_values,
+            spatial_cost_semantic_weight=float(
+                four_gate_spatial_cost_semantic_weight
+            ),
+            spatial_cost_distance_weight=float(
+                four_gate_spatial_cost_distance_weight
+            ),
             compute_capped_topmass_085=bool(
                 four_gate_compute_capped_topmass_085
             ),
@@ -4039,6 +4050,7 @@ def compute_four_gate_dgst_batch_from_captures(
     captures: Sequence[dict[str, Any]],
     visual_start: int,
     visual_end: int,
+    visual_grid: Sequence[int] | None = None,
     target_token_ids: Sequence[int],
     prediction_positions: Sequence[int],
     prompt_positions: Sequence[int] | None = None,
@@ -4049,11 +4061,14 @@ def compute_four_gate_dgst_batch_from_captures(
     mad_epsilon: float = RELATIVE_VLL_MAD_EPSILON,
     cost_mode: str = "sqrt_matched_state",
     cost_modes: Sequence[str] | str | None = None,
+    source_distribution_mode: str = "softmax",
     enabled_methods: Sequence[str] | None = None,
     compute_dual_scope: bool = False,
     support_modes: Sequence[str] | str | None = None,
     source_tau_values: Sequence[float] | float | None = None,
     transport_top_k_values: Sequence[int] | int | None = None,
+    spatial_cost_semantic_weight: float = 1.0,
+    spatial_cost_distance_weight: float = 1.0,
     compute_capped_topmass_085: bool = False,
     capped_topmass_alpha: float = TOPMASS_ALPHA_085,
     capped_topmass_alphas: Sequence[float] | float | None = None,
@@ -4081,6 +4096,9 @@ def compute_four_gate_dgst_batch_from_captures(
     ``source_tau_values`` and ``transport_top_k_values`` request a Cartesian
     hyperparameter sweep. The model captures, target gates, and EV curves are
     shared; only source distributions and OT risks are recomputed.
+    ``sqrt_matched_state_plus_spatial`` adds normalized 2-D visual-grid
+    distance to the existing sqrt-cosine semantic cost. Prompt-involving
+    pairs receive zero spatial cost, and both coefficients default to one.
     ``compute_capped_topmass_085`` adds an adaptive support ablation: source
     and target each retain enough descending probability mass to reach alpha,
     with the selected K clamped to ``[min_k, max_k]``. Risk uses their union;
@@ -4088,6 +4106,76 @@ def compute_four_gate_dgst_batch_from_captures(
     optionally expands this into a validation sweep while retaining the
     historical 0.85 field names when alpha 0.85 is present.
     """
+    if str(source_distribution_mode).strip().lower() == "all":
+        if source_tau_values is not None or transport_top_k_values is not None:
+            raise ValueError("Joint source extraction does not support the source-tau sweep")
+        for capture in captures:
+            capture["_joint_source_extraction"] = True
+        try:
+            mode_results = {
+                mode: compute_four_gate_dgst_batch_from_captures(
+                model=model,
+                captures=captures,
+                visual_start=visual_start,
+                visual_end=visual_end,
+                visual_grid=visual_grid,
+                target_token_ids=target_token_ids,
+                prediction_positions=prediction_positions,
+                prompt_positions=prompt_positions,
+                semantic_chunk_size=semantic_chunk_size,
+                tau=tau,
+                transport_top_k=transport_top_k,
+                target_region_top_k=target_region_top_k,
+                mad_epsilon=mad_epsilon,
+                cost_mode=cost_mode,
+                cost_modes=cost_modes,
+                source_distribution_mode=mode,
+                enabled_methods=enabled_methods,
+                compute_dual_scope=compute_dual_scope,
+                support_modes=support_modes,
+                source_tau_values=None,
+                transport_top_k_values=None,
+                spatial_cost_semantic_weight=spatial_cost_semantic_weight,
+                spatial_cost_distance_weight=spatial_cost_distance_weight,
+                compute_capped_topmass_085=compute_capped_topmass_085,
+                capped_topmass_alpha=capped_topmass_alpha,
+                capped_topmass_alphas=capped_topmass_alphas,
+                capped_topmass_min_k=capped_topmass_min_k,
+                capped_topmass_max_k=capped_topmass_max_k,
+                compute_prompt_cafe=compute_prompt_cafe,
+                prompt_cafe_temperature=prompt_cafe_temperature,
+                prompt_cafe_layer=prompt_cafe_layer,
+                compute_ffn_injection_features=compute_ffn_injection_features,
+                ffn_injection_eps=ffn_injection_eps,
+                release_layer_captures=False,
+            )
+                for mode in ("softmax", "pam", "cam")
+            }
+        finally:
+            for capture in captures:
+                capture.pop("_joint_source_extraction", None)
+                capture.pop("_four_gate_compact", None)
+                capture.pop("_four_gate_source_dists", None)
+        results = mode_results["softmax"]
+        for mode, variants in mode_results.items():
+            if len(variants) != len(results):
+                raise AssertionError("Joint source result counts differ")
+            for result, variant in zip(results, variants):
+                result[f"dgst_t_source_dist_{mode}_per_layer"] = variant[
+                    "dgst_t_source_dist_per_layer"
+                ]
+                for key, value in list(variant.items()):
+                    if key.startswith("dgst_t_") and "_risk_" in key and key.endswith("_per_layer"):
+                        result[f"{key[:-10]}_source_{mode}_per_layer"] = value
+        for result in results:
+            result["dgst_t_source_distribution_mode"] = "all"
+            result["dgst_t_source_modes"] = ["softmax", "pam", "cam"]
+        if release_layer_captures:
+            for capture in captures:
+                for key in ("h_prev", "o_attn", "h_mid", "o_ffn", "attn_weights"):
+                    capture[key] = None
+        return results
+
     active_modes = _normalize_four_gate_support_modes(
         support_modes,
         legacy_compute_dual_scope=bool(compute_dual_scope),
@@ -4130,6 +4218,7 @@ def compute_four_gate_dgst_batch_from_captures(
             captures=captures,
             visual_start=int(visual_start),
             visual_end=int(visual_end),
+            visual_grid=visual_grid,
             support_positions=support_positions,
             support_scope=scope_name,
             target_token_ids=target_token_ids,
@@ -4141,9 +4230,16 @@ def compute_four_gate_dgst_batch_from_captures(
             mad_epsilon=float(mad_epsilon),
             cost_mode=cost_mode,
             cost_modes=cost_modes,
+            source_distribution_mode=source_distribution_mode,
             enabled_methods=enabled_methods,
             source_tau_values=source_tau_values,
             transport_top_k_values=transport_top_k_values,
+            spatial_cost_semantic_weight=float(
+                spatial_cost_semantic_weight
+            ),
+            spatial_cost_distance_weight=float(
+                spatial_cost_distance_weight
+            ),
             compute_capped_topmass_085=bool(compute_capped_topmass_085),
             capped_topmass_alpha=float(capped_topmass_alpha),
             capped_topmass_alphas=capped_topmass_alphas,
@@ -4372,6 +4468,7 @@ def _compute_four_gate_single_scope_from_captures(
     captures: Sequence[dict[str, Any]],
     visual_start: int,
     visual_end: int,
+    visual_grid: Sequence[int] | None,
     support_positions: Sequence[int],
     support_scope: str,
     target_token_ids: Sequence[int],
@@ -4383,9 +4480,12 @@ def _compute_four_gate_single_scope_from_captures(
     mad_epsilon: float = RELATIVE_VLL_MAD_EPSILON,
     cost_mode: str = "sqrt_matched_state",
     cost_modes: Sequence[str] | str | None = None,
+    source_distribution_mode: str = "softmax",
     enabled_methods: Sequence[str] | None = None,
     source_tau_values: Sequence[float] | float | None = None,
     transport_top_k_values: Sequence[int] | int | None = None,
+    spatial_cost_semantic_weight: float = 1.0,
+    spatial_cost_distance_weight: float = 1.0,
     compute_capped_topmass_085: bool = False,
     capped_topmass_alpha: float = TOPMASS_ALPHA_085,
     capped_topmass_alphas: Sequence[float] | float | None = None,
@@ -4440,11 +4540,39 @@ def _compute_four_gate_single_scope_from_captures(
                 "capped_topmass_max_k must be >= capped_topmass_min_k."
             )
     methods = _normalize_four_gate_methods(enabled_methods)
+    source_mode = str(source_distribution_mode).strip().lower()
+    if source_mode not in {"softmax", "pam", "cam"}:
+        raise ValueError("four-gate source mode must be softmax, pam, or cam")
+    if source_mode != "softmax" and str(support_scope) != "visual":
+        raise ValueError("pam/cam require visual-only support")
     normalized_cost_mode = _normalize_four_gate_cost_mode(cost_mode)
     normalized_cost_modes = _normalize_four_gate_cost_modes(
         cost_modes,
         primary_cost_mode=normalized_cost_mode,
     )
+    spatial_cost_mode = "sqrt_cosine_matched_state_plus_spatial"
+    support_spatial_cost = None
+    if spatial_cost_mode in normalized_cost_modes:
+        semantic_weight = float(spatial_cost_semantic_weight)
+        distance_weight = float(spatial_cost_distance_weight)
+        if (
+            not math.isfinite(semantic_weight)
+            or semantic_weight < 0.0
+            or not math.isfinite(distance_weight)
+            or distance_weight < 0.0
+        ):
+            raise ValueError(
+                "spatial cost weights must be finite non-negative values."
+            )
+        if semantic_weight == 0.0 and distance_weight == 0.0:
+            raise ValueError("At least one spatial cost weight must be positive.")
+        support_spatial_cost = _normalized_visual_spatial_distance_matrix(
+            visual_grid=visual_grid,
+            visual_start=int(visual_start),
+            visual_end=int(visual_end),
+            support_positions=normalized_support_positions,
+            device=captures[0]["h_prev"].device,
+        )
     if source_tau_values is None and transport_top_k_values is None:
         sweep_specs: tuple[tuple[str, float, int], ...] = ()
     else:
@@ -4485,7 +4613,15 @@ def _compute_four_gate_single_scope_from_captures(
             else ()
         )
     )
+    weighted_only = (
+        not sweep_specs
+        and not compute_capped_topmass_085
+        and all(mode.startswith("linear_matched_state_target_w0") for mode in normalized_cost_modes)
+    )
     output_layer = resolve_output_embedding_layer(model)
+    if source_mode != "softmax":
+        from models.dgst_capture import resolve_decoder_layers
+        decoder_layers = resolve_decoder_layers(model)
     preparation_cache_enabled = _four_gate_preparation_cache_enabled()
 
     records: list[dict[str, Any]] = []
@@ -4506,6 +4642,8 @@ def _compute_four_gate_single_scope_from_captures(
                     for method in methods
                     for active_cost in normalized_cost_modes
                 },
+                "weighted_semantic_problems": {method: [] for method in methods},
+                "weighted_penalty_shifts": {method: [] for method in methods},
                 "capped_problems": {
                     (alpha_slug, method, active_cost): []
                     for alpha_slug, _alpha_value in capped_alpha_specs
@@ -4561,20 +4699,46 @@ def _compute_four_gate_single_scope_from_captures(
             raise RuntimeError(
                 f"four-gate DGST layer {layer_index} is missing captures: {missing}."
             )
-        compact_capture = build_compact_four_gate_layer_capture(
-            output_layer=output_layer,
-            capture=capture,
-            visual_start=int(visual_start),
-            visual_end=int(visual_end),
-            support_positions=normalized_support_positions,
-            target_token_ids=target_ids,
-            prediction_positions=pred_positions,
-            semantic_chunk_size=int(semantic_chunk_size),
-            tau=float(tau),
-            enabled_methods=methods,
-        )
+        cached_compact = capture.get("_four_gate_compact")
+        if cached_compact is None:
+            compact_capture = build_compact_four_gate_layer_capture(
+                output_layer=output_layer,
+                capture=capture,
+                visual_start=int(visual_start),
+                visual_end=int(visual_end),
+                support_positions=normalized_support_positions,
+                target_token_ids=target_ids,
+                prediction_positions=pred_positions,
+                semantic_chunk_size=int(semantic_chunk_size),
+                tau=float(tau),
+                enabled_methods=methods,
+            )
+            if capture.get("_joint_source_extraction"):
+                capture["_four_gate_compact"] = compact_capture
+        else:
+            compact_capture = dict(cached_compact)
         if tuple(compact_capture) != FOUR_GATE_CAPTURE_FIELDS:
             raise AssertionError("Unexpected fields in compact four-gate capture.")
+        if source_mode != "softmax":
+            from features.attention_writes import (
+                attention_write_source_distribution,
+                visual_attention_writes,
+            )
+
+            cached_sources = capture.get("_four_gate_source_dists")
+            if cached_sources is None:
+                writes = visual_attention_writes(
+                    decoder_layers[layer_index], capture, pred_positions,
+                    int(visual_start), int(visual_end),
+                )
+                ffn_outputs = capture["o_ffn"][0, pred_positions].float()
+                cached_sources = {
+                    mode: attention_write_source_distribution(ffn_outputs, writes, mode).detach()
+                    for mode in ("pam", "cam")
+                }
+                if capture.get("_joint_source_extraction"):
+                    capture["_four_gate_source_dists"] = cached_sources
+            compact_capture["source_dist"] = cached_sources[source_mode]
         visual_hpre = compact_capture["visual_hpre"]
         support_index = torch.tensor(
             normalized_support_positions,
@@ -4605,7 +4769,10 @@ def _compute_four_gate_single_scope_from_captures(
             else {}
         )
         preparation_cache = _FourGatePreparationCache(
-            enabled=preparation_cache_enabled
+            enabled=preparation_cache_enabled,
+            spatial_cost_matrix=support_spatial_cost,
+            spatial_cost_semantic_weight=float(spatial_cost_semantic_weight),
+            spatial_cost_distance_weight=float(spatial_cost_distance_weight),
         )
 
         for target_offset, prediction_position in enumerate(pred_positions):
@@ -4730,9 +4897,9 @@ def _compute_four_gate_single_scope_from_captures(
                     target=target_dist,
                     top_k=int(transport_top_k),
                 )
-                for active_cost in normalized_cost_modes:
-                    problem = preparation_cache.prepare_problem(
-                        cost_mode=active_cost,
+                if weighted_only:
+                    semantic_problem = preparation_cache.prepare_problem(
+                        cost_mode="cosine_matched_state",
                         cost_state_key=state_name,
                         source_key=source_cache_key,
                         source_dist=source_dist,
@@ -4743,8 +4910,38 @@ def _compute_four_gate_single_scope_from_captures(
                         hout_states=visual_hout,
                         update_states=visual_update,
                         support=support,
+                        target_cosines=cosine_map,
                     )
-                    record["problems"][(method, active_cost)].append(problem)
+                    record["weighted_semantic_problems"][method].append(semantic_problem)
+                    if semantic_problem is None:
+                        penalty_shift = 0.0
+                    else:
+                        local_source, local_target, _cost = semantic_problem
+                        local_penalty = (
+                            1.0 - cosine_map.index_select(0, support)
+                        ).detach().float().cpu()
+                        penalty_shift = float(
+                            ((torch.from_numpy(local_source) + torch.from_numpy(local_target))
+                            * local_penalty).sum().item()
+                        )
+                    record["weighted_penalty_shifts"][method].append(penalty_shift)
+                else:
+                    for active_cost in normalized_cost_modes:
+                        problem = preparation_cache.prepare_problem(
+                            cost_mode=active_cost,
+                            cost_state_key=state_name,
+                            source_key=source_cache_key,
+                            source_dist=source_dist,
+                            target_key=target_cache_key,
+                            target_dist=target_dist,
+                            matched_states=cost_states,
+                            hmid_states=visual_hmid,
+                            hout_states=visual_hout,
+                            update_states=visual_update,
+                            support=support,
+                            target_cosines=cosine_map,
+                        )
+                        record["problems"][(method, active_cost)].append(problem)
                 if compute_capped_topmass_085:
                     for alpha_slug, alpha_value in capped_alpha_specs:
                         capped_support = preparation_cache.capped_union(
@@ -4772,6 +4969,7 @@ def _compute_four_gate_single_scope_from_captures(
                                     hout_states=visual_hout,
                                     update_states=visual_update,
                                     support=capped_support,
+                                    target_cosines=cosine_map,
                                 )
                             )
                 for variant_slug, tau_value, top_k_value in sweep_specs:
@@ -4800,6 +4998,7 @@ def _compute_four_gate_single_scope_from_captures(
                                 hout_states=visual_hout,
                                 update_states=visual_update,
                                 support=variant_support,
+                                target_cosines=cosine_map,
                             )
                         )
                 if compute_capped_topmass_085:
@@ -4837,6 +5036,7 @@ def _compute_four_gate_single_scope_from_captures(
                                         hout_states=visual_hout,
                                         update_states=visual_update,
                                         support=variant_capped_support,
+                                        target_cosines=cosine_map,
                                     )
                                 )
                 region = preparation_cache.stable_topk(
@@ -4954,7 +5154,24 @@ def _compute_four_gate_single_scope_from_captures(
     results: list[dict[str, Any]] = []
     for target_offset, record in enumerate(records):
         # POT's exact EMD is the only solver exposed by this active profile.
-        risk_series = _solve_exact_emd_problem_series(record["problems"])
+        if weighted_only:
+            semantic_risks = _solve_exact_emd_problem_series(
+                record["weighted_semantic_problems"]
+            )
+            risk_series = {
+                (method, active_cost): [
+                    weight * semantic_risk + (1.0 - weight) * penalty_shift
+                    for semantic_risk, penalty_shift in zip(
+                        semantic_risks[method],
+                        record["weighted_penalty_shifts"][method],
+                    )
+                ]
+                for method in methods
+                for active_cost in normalized_cost_modes
+                for weight in (int(active_cost[-1]) / 10.0,)
+            }
+        else:
+            risk_series = _solve_exact_emd_problem_series(record["problems"])
         capped_risk_series = (
             _solve_exact_emd_problem_series(record["capped_problems"])
             if compute_capped_topmass_085
@@ -4992,7 +5209,8 @@ def _compute_four_gate_single_scope_from_captures(
                 if method not in {DIRECT_HPRE_SOFTMAX_METHOD, RAW_ATTENTION_METHOD}
             },
             "dgst_t_softmax_axis": "vocabulary",
-            "dgst_t_source_distribution_mode": "softmax",
+            "dgst_t_output_vocabulary_size": int(output_layer.weight.shape[0]),
+            "dgst_t_source_distribution_mode": source_mode,
             "dgst_t_state_by_method": {
                 method: _target_comparison_state(method)
                 for method in methods
@@ -5012,6 +5230,29 @@ def _compute_four_gate_single_scope_from_captures(
                 record["source"], dim=0
             ).detach().to(device="cpu", dtype=torch.float32),
         }
+        if spatial_cost_mode in normalized_cost_modes:
+            result.update(
+                {
+                    "dgst_t_spatial_cost_semantic_weight": float(
+                        spatial_cost_semantic_weight
+                    ),
+                    "dgst_t_spatial_cost_distance_weight": float(
+                        spatial_cost_distance_weight
+                    ),
+                    "dgst_t_spatial_cost_visual_grid": [
+                        int(value)
+                        for value in (
+                            visual_grid if visual_grid is not None else ()
+                        )
+                    ],
+                    "dgst_t_spatial_cost_distance_normalization": (
+                        "euclidean_grid_distance_divided_by_grid_diagonal"
+                    ),
+                    "dgst_t_spatial_cost_prompt_policy": (
+                        "zero_if_either_token_is_nonvisual"
+                    ),
+                }
+            )
         if compute_capped_topmass_085:
             capped_alpha_map = dict(capped_alpha_specs)
             compatibility_alpha = capped_alpha_map.get(
@@ -5396,8 +5637,85 @@ def _normalize_four_gate_support_modes(
     return tuple(mode for mode in ("vv", "vp", "vpend") if mode in normalized)
 
 
+def _normalized_visual_spatial_distance_matrix(
+    *,
+    visual_grid: Sequence[int] | None,
+    visual_start: int,
+    visual_end: int,
+    support_positions: Sequence[int],
+    device: torch.device,
+) -> torch.Tensor:
+    """Return normalized 2-D distances, with zero cost for prompt pairs."""
+    if visual_grid is None or len(visual_grid) != 2:
+        raise ValueError(
+            "sqrt_matched_state_plus_spatial requires visual_grid=(height, width)."
+        )
+    height, width = (int(value) for value in visual_grid)
+    if height <= 0 or width <= 0:
+        raise ValueError("visual_grid dimensions must be positive.")
+    visual_count = int(visual_end) - int(visual_start)
+    if height * width != visual_count:
+        raise ValueError(
+            "visual_grid does not match the visual token range: "
+            f"grid={height}x{width}, tokens={visual_count}."
+        )
+
+    positions = torch.tensor(
+        [int(position) for position in support_positions],
+        dtype=torch.long,
+        device=device,
+    )
+    visual_mask = (positions >= int(visual_start)) & (
+        positions < int(visual_end)
+    )
+    visual_support_indices = torch.nonzero(
+        visual_mask, as_tuple=False
+    ).flatten()
+    distance = torch.zeros(
+        (int(positions.numel()), int(positions.numel())),
+        dtype=torch.float32,
+        device=device,
+    )
+    if visual_support_indices.numel() == 0:
+        return distance
+
+    offsets = positions.index_select(0, visual_support_indices) - int(
+        visual_start
+    )
+    coordinates = torch.stack(
+        (
+            torch.div(offsets, width, rounding_mode="floor"),
+            torch.remainder(offsets, width),
+        ),
+        dim=-1,
+    ).float()
+    visual_distance = torch.cdist(coordinates, coordinates, p=2)
+    grid_diagonal = math.hypot(max(height - 1, 0), max(width - 1, 0))
+    if grid_diagonal > 0.0:
+        visual_distance = visual_distance / float(grid_diagonal)
+    distance[
+        visual_support_indices.unsqueeze(1),
+        visual_support_indices.unsqueeze(0),
+    ] = visual_distance
+    return distance
+
+
 def _normalize_four_gate_cost_mode(value: str) -> str:
     mode = str(value).strip().lower().replace("-", "_")
+    if mode in {f"linear_matched_state_target_w0{digit}" for digit in (2, 4, 6, 8)}:
+        return mode
+    if mode in {
+        "sqrt_matched_state_plus_spatial",
+        "sqrt_cosine_matched_state_plus_spatial",
+        "sqrt_matched_state_spatial",
+        "semantic_plus_spatial",
+    }:
+        return "sqrt_cosine_matched_state_plus_spatial"
+    if mode in {
+        "sqrt_matched_state_plus_target_penalty",
+        "sqrt_cosine_matched_state_plus_target_penalty",
+    }:
+        return "sqrt_cosine_matched_state_plus_target_penalty"
     if mode in {
         "sqrt_matched_state",
         "sqrt_cosine_matched_state",
@@ -5430,6 +5748,8 @@ def _normalize_four_gate_cost_mode(value: str) -> str:
             return f"sqrt_stateupd_alpha{slug}"
     raise ValueError(
         "four_gate cost_mode must be 'sqrt_matched_state' or "
+        "'sqrt_matched_state_plus_target_penalty' or "
+        "'sqrt_matched_state_plus_spatial' or "
         "'cosine_matched_state' or "
         "'geo_stateupd_lu1' or one of 'sqrt_stateupd_alpha01' through "
         "'sqrt_stateupd_alpha09'."
@@ -5454,6 +5774,12 @@ def _normalize_four_gate_cost_modes(
 
 def _four_gate_risk_suffix(cost_mode: str, state_name: str) -> str:
     normalized = _normalize_four_gate_cost_mode(cost_mode)
+    if normalized.startswith("linear_matched_state_target_w0"):
+        return f"risk_{normalized}_{state_name}"
+    if normalized == "sqrt_cosine_matched_state_plus_spatial":
+        return f"risk_sqrt_{state_name}_plus_spatial"
+    if normalized == "sqrt_cosine_matched_state_plus_target_penalty":
+        return f"risk_sqrt_{state_name}_plus_target_penalty"
     if normalized == "geo_stateupd_lu1":
         return "risk_geo_stateupd_lu1"
     if _four_gate_stateupd_alpha(normalized) is not None:
@@ -5486,8 +5812,22 @@ class _FourGatePreparationCache:
     identical to the historical subset-first path.
     """
 
-    def __init__(self, *, enabled: bool) -> None:
+    def __init__(
+        self,
+        *,
+        enabled: bool,
+        spatial_cost_matrix: torch.Tensor | None = None,
+        spatial_cost_semantic_weight: float = 1.0,
+        spatial_cost_distance_weight: float = 1.0,
+    ) -> None:
         self.enabled = bool(enabled)
+        self.spatial_cost_matrix = spatial_cost_matrix
+        self.spatial_cost_semantic_weight = float(
+            spatial_cost_semantic_weight
+        )
+        self.spatial_cost_distance_weight = float(
+            spatial_cost_distance_weight
+        )
         self._transport_topk_indices: dict[tuple[Any, int], torch.Tensor] = {}
         self._stable_topk_indices: dict[tuple[Any, int], torch.Tensor] = {}
         self._capped_indices: dict[
@@ -5671,6 +6011,7 @@ class _FourGatePreparationCache:
         hout_states: torch.Tensor,
         update_states: torch.Tensor,
         support: torch.Tensor,
+        target_cosines: torch.Tensor | None = None,
     ):
         if not self.enabled:
             return _prepare_four_gate_cost_problem(
@@ -5682,6 +6023,10 @@ class _FourGatePreparationCache:
                 hout_states=hout_states,
                 update_states=update_states,
                 support=support,
+                target_cosines=target_cosines,
+                spatial_cost_matrix=self.spatial_cost_matrix,
+                spatial_cost_semantic_weight=self.spatial_cost_semantic_weight,
+                spatial_cost_distance_weight=self.spatial_cost_distance_weight,
             )
         if support.numel() == 0:
             return None
@@ -5692,7 +6037,13 @@ class _FourGatePreparationCache:
             if normalized_cost == "geo_stateupd_lu1"
             else str(cost_state_key)
         )
-        cost_key = (normalized_cost, effective_state_key, support_key)
+        cost_key = (
+            normalized_cost, effective_state_key, support_key,
+            target_key if (
+                normalized_cost == "sqrt_cosine_matched_state_plus_target_penalty"
+                or normalized_cost.startswith("linear_matched_state_target_w0")
+            ) else None,
+        )
         cost = self._cost_matrices.get(cost_key)
         if cost is None:
             uncached = _prepare_four_gate_cost_problem(
@@ -5704,6 +6055,10 @@ class _FourGatePreparationCache:
                 hout_states=hout_states,
                 update_states=update_states,
                 support=support,
+                target_cosines=target_cosines,
+                spatial_cost_matrix=self.spatial_cost_matrix,
+                spatial_cost_semantic_weight=self.spatial_cost_semantic_weight,
+                spatial_cost_distance_weight=self.spatial_cost_distance_weight,
             )
             if uncached is None:
                 return None
@@ -5741,8 +6096,90 @@ def _prepare_four_gate_cost_problem(
     hout_states: torch.Tensor,
     update_states: torch.Tensor,
     support: torch.Tensor,
+    target_cosines: torch.Tensor | None = None,
+    spatial_cost_matrix: torch.Tensor | None = None,
+    spatial_cost_semantic_weight: float = 1.0,
+    spatial_cost_distance_weight: float = 1.0,
 ):
     normalized = _normalize_four_gate_cost_mode(cost_mode)
+    if normalized.startswith("linear_matched_state_target_w0"):
+        if target_cosines is None:
+            raise ValueError("Weighted target cost requires target cosines.")
+        weight = int(normalized[-1]) / 10.0
+        problem = _prepare_transport_problem_for_state_cost(
+            source_dist=source_dist,
+            target_dist=target_dist,
+            states=matched_states,
+            support=support,
+            sqrt_cosine=False,
+            keep_on_device=True,
+        )
+        if problem is None:
+            return None
+        local_source, local_target, semantic_cost = problem
+        penalty = 1.0 - target_cosines.index_select(0, support).clamp(-1.0, 1.0)
+        combined_cost = (
+            weight * semantic_cost
+            + (1.0 - weight) * (penalty[:, None] + penalty[None, :])
+        )
+        return (
+            local_source.detach().float().cpu().numpy().copy(),
+            local_target.detach().float().cpu().numpy().copy(),
+            combined_cost.detach().float().cpu().numpy().copy(),
+        )
+    if normalized == "sqrt_cosine_matched_state_plus_target_penalty":
+        if target_cosines is None:
+            raise ValueError("Target penalty cost requires target cosines.")
+        problem = _prepare_transport_problem_for_state_cost(
+            source_dist=source_dist,
+            target_dist=target_dist,
+            states=matched_states,
+            support=support,
+            sqrt_cosine=True,
+            keep_on_device=True,
+        )
+        if problem is None:
+            return None
+        local_source, local_target, semantic_cost = problem
+        relevance_penalty = 1.0 - target_cosines.index_select(0, support).clamp(-1.0, 1.0)
+        combined_cost = (
+            semantic_cost
+            + relevance_penalty.unsqueeze(1)
+            + relevance_penalty.unsqueeze(0)
+        )
+        return (
+            local_source.detach().float().cpu().numpy().copy(),
+            local_target.detach().float().cpu().numpy().copy(),
+            combined_cost.detach().float().cpu().numpy().copy(),
+        )
+    if normalized == "sqrt_cosine_matched_state_plus_spatial":
+        if spatial_cost_matrix is None:
+            raise ValueError(
+                "sqrt_matched_state_plus_spatial requires a visual grid."
+            )
+        problem = _prepare_transport_problem_for_state_cost(
+            source_dist=source_dist,
+            target_dist=target_dist,
+            states=matched_states,
+            support=support,
+            sqrt_cosine=True,
+            keep_on_device=True,
+        )
+        if problem is None:
+            return None
+        local_source, local_target, semantic_cost = problem
+        local_spatial_cost = spatial_cost_matrix.index_select(
+            0, support
+        ).index_select(1, support)
+        combined_cost = (
+            float(spatial_cost_semantic_weight) * semantic_cost
+            + float(spatial_cost_distance_weight) * local_spatial_cost
+        )
+        return (
+            local_source.detach().float().cpu().numpy().copy(),
+            local_target.detach().float().cpu().numpy().copy(),
+            combined_cost.detach().float().cpu().numpy().copy(),
+        )
     if normalized == "geo_stateupd_lu1":
         return _prepare_transport_problem_for_state_cost(
             source_dist=source_dist,

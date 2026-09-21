@@ -54,7 +54,14 @@ from utils.io_utils import load_json, save_json, save_pkl
 from utils.split_utils import validate_strict_82_split
 
 
-DEFAULT_METHODS = ("metatoken", "svar", "dhcp", "projectaway", "halloc")
+DEFAULT_METHODS = (
+    "metatoken",
+    "svar",
+    "dhcp",
+    "projectaway",
+    "token_grounding",
+    "instruct_lens",
+)
 SUMMARY_METRICS = (
     "accuracy",
     "precision",
@@ -510,12 +517,18 @@ def _run_shared_mlp_protocol(
 ) -> tuple[dict[str, Any], list[Path]]:
     """Train every dense baseline with the same configured Torch probe."""
 
-    supported = {"metatoken", "svar", "dhcp", "projectaway"}
+    supported = {
+        "metatoken",
+        "svar",
+        "dhcp",
+        "projectaway",
+        "token_grounding",
+    }
     unsupported = sorted(set(methods) - supported)
     if unsupported:
         raise ValueError(
-            "shared_torch_mlp supports MetaToken, SVAR, DHCP, and "
-            "ProjectAway; "
+            "shared_torch_mlp supports MetaToken, SVAR, DHCP, ProjectAway, "
+            "and TokenGrounding; "
             f"unsupported methods: {unsupported}"
         )
     result_dir = result_root / "results" / "shared_torch_mlp"
@@ -662,7 +675,7 @@ def _shared_mlp_baseline_matrix(
         label = record.get("label")
         if label not in (0, 1):
             raise ValueError(f"Invalid shared-MLP baseline label: {label!r}")
-        if normalized in {"metatoken", "svar"}:
+        if normalized in {"metatoken", "svar", "token_grounding"}:
             if normalized == "svar":
                 vector = svar_training_vector(
                     get_baseline_payload(record, normalized),
@@ -960,7 +973,21 @@ def _train_one_seed(
                 positive_class,
                 strict_82_no_validation=True,
             )
-        else:
+        elif method == "token_grounding":
+            result = _train_token_grounding(
+                training_records,
+                checkpoint_dir,
+                baseline_cfg,
+                device,
+                positive_class,
+            )
+        elif method == "instruct_lens":
+            result = _evaluate_instruct_lens(
+                training_records,
+                positive_class,
+                strict_82_no_validation=True,
+            )
+        elif method == "halloc":
             result = _train_halloc(
                 training_records,
                 baseline_dir,
@@ -969,6 +996,8 @@ def _train_one_seed(
                 device,
                 positive_class,
             )
+        else:
+            raise ValueError(f"Unsupported native baseline method: {method!r}")
         _rename_train_diagnostics(result)
         output["methods"][method] = result
         save_json(output, str(result_path))
@@ -1479,6 +1508,8 @@ def _baseline_method_variants(
                 "dhcp": "DHCP",
                 "projectaway": "ProjectAway",
                 "halloc": "HalLoc",
+                "token_grounding": "TokenGrounding",
+                "instruct_lens": "InsLen",
             }
             variants[normalized] = (labels.get(normalized, str(method)), result)
     return variants
@@ -1983,6 +2014,106 @@ def _svar_training_layer_range(
     return start, end
 
 
+def _train_token_grounding(
+    split_records,
+    checkpoint_dir,
+    cfg,
+    device,
+    positive_class,
+) -> dict[str, Any]:
+    """Train one detector on concat(ADS per layer, CGC per layer)."""
+    token_cfg = dict(cfg.get("token_grounding") or {})
+    matrices = {
+        split: build_dense_baseline_matrix(
+            split_records[split],
+            "token_grounding",
+        )[:2]
+        for split in ("train", "val", "test")
+    }
+    seed = int(cfg.get("seed", 42))
+    strict_82 = bool(cfg.get("_strict_82_no_validation", False))
+    hidden_dim = int(
+        _setting(token_cfg, "hidden_dim", "hidden_size", default=248)
+    )
+    _seed_everything(seed)
+    model = SVARMLP(matrices["train"][0].shape[1], hidden_dim=hidden_dim)
+    trained = train_torch_detector(
+        model=model,
+        X_train=matrices["train"][0],
+        raw_y_train=matrices["train"][1],
+        X_val=matrices["val"][0],
+        raw_y_val=matrices["val"][1],
+        X_test=matrices["test"][0],
+        raw_y_test=matrices["test"][1],
+        epochs=int(_setting(token_cfg, "epochs", "max_epochs", default=50)),
+        learning_rate=float(token_cfg.get("learning_rate", 1e-3)),
+        batch_size=int(token_cfg.get("batch_size", 32)),
+        device=device,
+        weight_decay=float(token_cfg.get("weight_decay", 0.0)),
+        weighted_sampler=bool(token_cfg.get("weighted_sampler", False)),
+        standardize=bool(token_cfg.get("standardize", False)),
+        early_stopping_patience=int(
+            token_cfg.get("early_stopping_patience", 5)
+        ),
+        seed=seed,
+        positive_class=positive_class,
+        strict_82_no_validation=strict_82,
+    )
+    chosen_device = torch.device(device)
+    train_scores = torch_hallucination_scores(
+        model, matrices["val"][0], chosen_device
+    )
+    test_scores = torch_hallucination_scores(
+        model, matrices["test"][0], chosen_device
+    )
+    path = checkpoint_dir / "token_grounding.pt"
+    _atomic_torch_save(
+        path,
+        {
+            "state_dict": trained.state_dict,
+            "input_dim": int(matrices["train"][0].shape[1]),
+            "hidden_dim": hidden_dim,
+            "threshold": trained.threshold,
+            "threshold_score_class": str(positive_class),
+            "feature_definition": "concat_ads_per_layer_cgc_per_layer",
+        },
+    )
+    return {
+        "paper_config": {
+            "feature_definition": "concat_ads_per_layer_cgc_per_layer",
+            "hidden_dim": hidden_dim,
+            "learning_rate": float(token_cfg.get("learning_rate", 1e-3)),
+            "weight_decay": float(token_cfg.get("weight_decay", 0.0)),
+            "batch_size": int(token_cfg.get("batch_size", 32)),
+            "epochs": int(
+                _setting(token_cfg, "epochs", "max_epochs", default=50)
+            ),
+            "standardize": bool(token_cfg.get("standardize", False)),
+            "early_stopping_patience": (
+                None
+                if strict_82
+                else int(token_cfg.get("early_stopping_patience", 5))
+            ),
+            "positive_class": str(positive_class),
+        },
+        "input_dim": int(matrices["train"][0].shape[1]),
+        "threshold": trained.threshold,
+        "threshold_score_class": str(positive_class),
+        "val_metrics": trained.val_metrics,
+        "test_metrics": trained.test_metrics,
+        "threshold_reports": _build_threshold_reports(
+            train_labels=matrices["val"][1],
+            train_scores=train_scores,
+            test_labels=matrices["test"][1],
+            test_scores=test_scores,
+            selected_threshold=trained.threshold,
+            positive_class=positive_class,
+        ),
+        "history": trained.history,
+        "checkpoint": str(path),
+    }
+
+
 def _train_dhcp(
     split_records,
     baseline_dir,
@@ -2184,6 +2315,78 @@ def _evaluate_projectaway(
             test_scores=scores["test"],
             selected_threshold=threshold,
             positive_class=positive_class,
+        ),
+    }
+
+
+def _evaluate_instruct_lens(
+    split_records,
+    positive_class,
+    *,
+    strict_82_no_validation: bool = False,
+) -> dict[str, Any]:
+    """Evaluate the released training-free InsLen score on ENDAC objects."""
+    scores: dict[str, np.ndarray] = {}
+    labels: dict[str, np.ndarray] = {}
+    for split in ("val", "test"):
+        payloads = [
+            get_baseline_payload(record, "instruct_lens")
+            for record in split_records[split]
+        ]
+        # The released score is truth-oriented. The common evaluator consumes
+        # hallucination-oriented scores, so preserve ranking by negating it.
+        scores[split] = -np.asarray(
+            [float(payload["score"]) for payload in payloads],
+            dtype=np.float64,
+        )
+        labels[split] = np.asarray(
+            [int(record["label"]) for record in split_records[split]],
+            dtype=np.int64,
+        )
+    threshold = select_detection_threshold(
+        labels["val"],
+        scores["val"],
+        positive_class=positive_class,
+    )
+    return {
+        "paper_config": {
+            "training_free": True,
+            "k": 16,
+            "m": 4,
+            "scale": 0.1,
+            "temperature": 10.0,
+            "bias": 2.0,
+            "w": 0.4,
+            "score_formula": "0.6*calibrated_local+0.4*context_consistency",
+            "score_orientation": "higher_is_more_truthful",
+            "evaluated_hallucination_score": "-score",
+            "threshold_selected_on": (
+                "train_f1" if strict_82_no_validation else "val"
+            ),
+            "positive_class": str(positive_class),
+        },
+        "threshold": threshold,
+        "threshold_score_class": str(positive_class),
+        "val_metrics": evaluate_detection_scores(
+            labels["val"],
+            scores["val"],
+            threshold,
+            positive_class=positive_class,
+        ),
+        "test_metrics": evaluate_detection_scores(
+            labels["test"],
+            scores["test"],
+            threshold,
+            positive_class=positive_class,
+        ),
+        "threshold_reports": _build_threshold_reports(
+            train_labels=labels["val"],
+            train_scores=scores["val"],
+            test_labels=labels["test"],
+            test_scores=scores["test"],
+            selected_threshold=threshold,
+            positive_class=positive_class,
+            fixed_threshold=0.0,
         ),
     }
 

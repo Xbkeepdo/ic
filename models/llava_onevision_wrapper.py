@@ -374,6 +374,7 @@ class LLaVAOneVisionWrapper(BaseLVLMWrapper):
                 captures=captures,
                 visual_start=img_start,
                 visual_end=img_end,
+                visual_grid=visual_grid,
                 image_token_id=self._image_token_id,
                 target_token_id=dgst_target_id,
                 prediction_position=expanded_seq_len - 1,
@@ -714,6 +715,7 @@ def _compute_dgst_result_from_captures(
     captures: Sequence[dict[str, Any]],
     visual_start: int,
     visual_end: int,
+    visual_grid: Optional[Tuple[int, int]],
     image_token_id: int,
     target_token_id: int,
     prediction_position: int,
@@ -729,6 +731,7 @@ def _compute_dgst_result_from_captures(
         captures=captures,
         visual_start=int(visual_start),
         visual_end=int(visual_end),
+        visual_grid=visual_grid,
         image_token_id=int(image_token_id),
         target_token_ids=[int(target_token_id)],
         prediction_positions=[int(prediction_position)],
@@ -786,6 +789,12 @@ def _compute_dgst_result_from_captures(
         four_gate_support_modes=cfg.get("support_modes"),
         four_gate_source_tau_values=cfg.get("source_tau_values"),
         four_gate_transport_top_k_values=cfg.get("transport_top_k_values"),
+        four_gate_spatial_cost_semantic_weight=float(
+            cfg.get("spatial_cost_semantic_weight", 1.0)
+        ),
+        four_gate_spatial_cost_distance_weight=float(
+            cfg.get("spatial_cost_distance_weight", 1.0)
+        ),
         compute_prompt_cafe=bool(cfg.get("compute_prompt_cafe", False)),
         prompt_cafe_temperature=float(cfg.get("prompt_cafe_temperature", 10.0)),
         prompt_cafe_layer=int(cfg.get("prompt_cafe_layer", 22)),

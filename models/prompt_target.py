@@ -369,6 +369,7 @@ def extract_prompt_target_from_inputs(
             captures=captures,
             visual_start=int(visual_start),
             visual_end=int(visual_end),
+            visual_grid=visual_grid,
             image_token_id=int(image_token_id),
             target_token_ids=[int(alignment.target_token_id)],
             prediction_positions=[prediction_position],
@@ -688,6 +689,12 @@ def _dgst_options(cfg: Mapping[str, Any]) -> dict[str, Any]:
         "four_gate_support_modes": cfg.get("support_modes"),
         "four_gate_source_tau_values": cfg.get("source_tau_values"),
         "four_gate_transport_top_k_values": cfg.get("transport_top_k_values"),
+        "four_gate_spatial_cost_semantic_weight": float(
+            cfg.get("spatial_cost_semantic_weight", 1.0)
+        ),
+        "four_gate_spatial_cost_distance_weight": float(
+            cfg.get("spatial_cost_distance_weight", 1.0)
+        ),
         "compute_prompt_cafe": bool(cfg.get("compute_prompt_cafe", False)),
         "prompt_cafe_temperature": float(
             cfg.get("prompt_cafe_temperature", 10.0)

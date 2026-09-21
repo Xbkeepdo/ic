@@ -1,0 +1,5 @@
+extends: model_configs_coco4000_512_weighted_cost.yaml
+
+feature_extraction:
+  dgst_t:
+    source_distribution_mode: pam

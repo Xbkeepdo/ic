@@ -209,7 +209,7 @@ feature_extraction:
     # Shared transport math for all four gates and both direct controls.
     tau: 0.07
     # Optional Cartesian source-tau x Top-K sweep; both null means disabled.
-    source_tau_values: [0.03, 0.04, 0.05, 0.06] # null disables source-tau / Top-K sweep feature variants.
+    source_tau_values: null # null disables source-tau / Top-K sweep feature variants.
     # InsLen CAFE: max over prompt positions of the generated object-token
     # probability from hpre Logit Lens. The paper/code use scale=0.1, which is
     # equivalent to softmax(logits / temperature) with temperature=10.
@@ -224,22 +224,23 @@ feature_extraction:
     compute_ffn_injection_features: false
     ffn_injection_eps: 1.0e-12
     transport_top_k: 64
-    transport_top_k_values: [64]
+    transport_top_k_values: null
     # Adaptive capped-topmass ablation: retain cumulative target/source mass
     # 0.85, but clamp each side's K to [32,64]. Risk uses the union; target
     # cosine uses the target-only region.
-    compute_capped_topmass_085: true
+    compute_capped_topmass_085: false
     # Capped Top-Mass alpha sweep. Alpha 0.85 keeps the historical field names.
-    capped_topmass_alphas: [0.7, 0.75, 0.8, 0.85, 0.9]
+    capped_topmass_alphas: null
     # Legacy scalar retained for old outputs/config readers.
     capped_topmass_085_alpha: 0.85
     capped_topmass_085_min_k: 32
     capped_topmass_085_max_k: 64
-    # Primary: C_ij = sqrt((1-cos(h_state_i,h_state_j))/2), where h_state is
-    # h_prev for hpre methods. The state-update family uses
-    # C_alpha=(1-alpha)*d_state+alpha*d_update for alpha=0.1,...,0.9.
-    cost_mode: "sqrt_matched_state"
+    # Target penalty: C = sqrt((1-cos(v_i,v_j))/2)
+    #   + (1-cos(q_t,v_i)) + (1-cos(q_t,v_j)).
+    # Keep the semantic-only cost for a matched comparison.
+    cost_mode: "sqrt_matched_state_plus_target_penalty"
     cost_modes:
+      - "sqrt_matched_state_plus_target_penalty"
       - "sqrt_matched_state"
       # - "sqrt_stateupd_alpha01"
       # - "sqrt_stateupd_alpha02"
@@ -279,7 +280,7 @@ training:
   # When enabled, run.sh trains these tau x Top-K variants after the ordinary
   # method/baseline stage. Risk and matching EV both use every decoder layer.
   source_tau_transport_topk_sweep:
-    enabled: true
+    enabled: false
     feature_methods:
       - "hpre_raw_logit_gauss"
       - "hpre_softmax_prob_gauss"
@@ -321,11 +322,11 @@ training:
     seeds: [43, 44, 45]                     # Shared by method, ADS+CGC, and QA dense baselines.
   feature_sets:
     method:
-      # VV: fixed sqrt-matched baseline plus alpha=0.1,...,0.9 state/update risks.
+      # VV: semantic-only and target-penalty risks, alone and with EV.
       - "hpre_raw_logit_gauss_risk_sqrt_matched_state"
       - "hpre_raw_logit_gauss_risk_sqrt_matched_state+hpre_raw_logit_gauss_ev_target_dist_mass_x_cosine"
-      - "hpre_raw_logit_gauss_risk_sqrt_matched_state_capped_topmass_085+hpre_raw_logit_gauss_target_cosine_capped_topmass_085"
-      - "hpre_raw_logit_gauss_ev_target_dist_mass_x_cosine"
+      - "hpre_raw_logit_gauss_risk_sqrt_matched_state_plus_target_penalty"
+      - "hpre_raw_logit_gauss_risk_sqrt_matched_state_plus_target_penalty+hpre_raw_logit_gauss_ev_target_dist_mass_x_cosine"
       # - "hpre_raw_logit_gauss_risk_sqrt_stateupd_alpha01"
       # - "hpre_raw_logit_gauss_risk_sqrt_stateupd_alpha01+hpre_raw_logit_gauss_ev_target_dist_mass_x_cosine"
       # - "hpre_raw_logit_gauss_risk_sqrt_stateupd_alpha02"
@@ -367,11 +368,11 @@ training:
       # - "vp_hpre_raw_logit_gauss_risk_sqrt_stateupd_alpha08+vp_hpre_raw_logit_gauss_ev_target_dist_mass_x_cosine"
       # - "vp_hpre_raw_logit_gauss_risk_sqrt_stateupd_alpha09"
       # - "vp_hpre_raw_logit_gauss_risk_sqrt_stateupd_alpha09+vp_hpre_raw_logit_gauss_ev_target_dist_mass_x_cosine"
-      # Generic risk resolves to the primary sqrt_matched_state field.
-      - "hpre_softmax_prob_gauss_risk"
-      - "hpre_softmax_prob_gauss_ev_target_dist_mass_x_cosine"
-      - "hpre_softmax_prob_gauss_risk+hpre_softmax_prob_gauss_ev_target_dist_mass_x_cosine"
-      - "hpre_softmax_prob_gauss_risk_capped_topmass_085+hpre_softmax_prob_gauss_target_cosine_capped_topmass_085"
+      # Use explicit semantic-risk aliases so the trained cost is unambiguous.
+      - "hpre_softmax_prob_gauss_risk_sqrt_matched_state"
+      - "hpre_softmax_prob_gauss_risk_sqrt_matched_state+hpre_softmax_prob_gauss_ev_target_dist_mass_x_cosine"
+      - "hpre_softmax_prob_gauss_risk_sqrt_matched_state_plus_target_penalty"
+      - "hpre_softmax_prob_gauss_risk_sqrt_matched_state_plus_target_penalty+hpre_softmax_prob_gauss_ev_target_dist_mass_x_cosine"
       # - "hpre_softmax_prob_gauss_risk_sqrt_stateupd_alpha01"
       # - "hpre_softmax_prob_gauss_risk_sqrt_stateupd_alpha01+hpre_softmax_prob_gauss_ev_target_dist_mass_x_cosine"
       # - "hpre_softmax_prob_gauss_risk_sqrt_stateupd_alpha02"

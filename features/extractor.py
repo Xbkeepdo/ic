@@ -1082,11 +1082,18 @@ def _build_four_gate_feature_record(
             )
         }
     capped_slugs = tuple(capped_alpha_by_slug)
+    configured_cost_modes = tuple(
+        dgst_t.get("dgst_t_cost_modes") or [dgst_t["dgst_t_cost"]]
+    )
+    has_spatial_cost = (
+        "sqrt_cosine_matched_state_plus_spatial" in configured_cost_modes
+    )
     required_metadata = (
         "dgst_t_profile",
         "dgst_t_mad_axis",
         "dgst_t_mad_scale",
         "dgst_t_softmax_axis",
+        "dgst_t_output_vocabulary_size",
         "dgst_t_source_distribution_mode",
         "dgst_t_state_by_method",
         "dgst_t_transport_top_k",
@@ -1094,6 +1101,17 @@ def _build_four_gate_feature_record(
         "dgst_t_ev_definition",
         "dgst_t_cost",
         "dgst_t_ot_solver",
+        *(
+            (
+                "dgst_t_spatial_cost_semantic_weight",
+                "dgst_t_spatial_cost_distance_weight",
+                "dgst_t_spatial_cost_visual_grid",
+                "dgst_t_spatial_cost_distance_normalization",
+                "dgst_t_spatial_cost_prompt_policy",
+            )
+            if has_spatial_cost
+            else ()
+        ),
         *(
             (
                 "dgst_t_compute_capped_topmass_085",
@@ -1109,9 +1127,7 @@ def _build_four_gate_feature_record(
     direct_softmax_method = "hpre_softmax_prob_direct"
     target_region_top_k = int(dgst_t["dgst_t_target_region_top_k"])
     topk_slug = f"topk{target_region_top_k}"
-    cost_modes = tuple(
-        dgst_t.get("dgst_t_cost_modes") or [dgst_t["dgst_t_cost"]]
-    )
+    cost_modes = configured_cost_modes
     support_scopes = tuple(
         dgst_t.get("dgst_t_four_gate_support_scopes") or ["visual"]
     )
@@ -1485,6 +1501,18 @@ def _build_four_gate_feature_record(
                 "cartesian_source_tau_x_transport_top_k_risk_only",
             )
         )
+    if dgst_t.get("dgst_t_source_distribution_mode") == "all":
+        source_modes = tuple(dgst_t["dgst_t_source_modes"])
+        feat["dgst_t_source_modes"] = list(source_modes)
+        for mode in source_modes:
+            dist_key = f"dgst_t_source_dist_{mode}_per_layer"
+            feat[dist_key] = _compact_numpy(dgst_t[dist_key], dtype=np.float32)
+            for method in methods:
+                state_name = _target_comparison_state(method)
+                for cost_mode in cost_modes:
+                    risk_suffix = _four_gate_risk_suffix(cost_mode, state_name)
+                    key = f"dgst_t_{method}_{risk_suffix}_source_{mode}_per_layer"
+                    feat[key] = _compact_numpy(dgst_t[key], dtype=np.float32)
     return feat
 
 

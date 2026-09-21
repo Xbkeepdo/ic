@@ -30,6 +30,12 @@ from .projectaway import (
     compute_projectaway_internal_confidence,
     compute_projectaway_probability_cache,
 )
+from .instruct_lens import (
+    InstructionLensFeatures,
+    InstructionLensProbabilityCache,
+    build_instruction_lens_probability_cache,
+    compute_instruction_lens_features,
+)
 from .runtime import (
     BaselineRuntime,
     baseline_config,
@@ -52,6 +58,7 @@ from .svar import (
     prepare_official_svar_spans,
     svar_training_vector,
 )
+from .token_grounding import TokenGroundingFeatures, compute_token_grounding_features
 
 __all__ = [
     "BASELINE_SCHEMA_VERSION",
@@ -69,6 +76,9 @@ __all__ = [
     "MetaTokenFeatures",
     "ProjectAwayConfidence",
     "ProjectAwayProbabilityCache",
+    "InstructionLensFeatures",
+    "InstructionLensProbabilityCache",
+    "TokenGroundingFeatures",
     "SVARFeatures",
     "attach_baseline",
     "baseline_extraction_requirements",
@@ -79,6 +89,9 @@ __all__ = [
     "compute_baseline_record",
     "compute_projectaway_internal_confidence",
     "compute_projectaway_probability_cache",
+    "compute_instruction_lens_features",
+    "build_instruction_lens_probability_cache",
+    "compute_token_grounding_features",
     "compute_svar_features",
     "get_baseline_payload",
     "halloc_optimizer_config",

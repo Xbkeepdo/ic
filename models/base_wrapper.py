@@ -185,6 +185,7 @@ class ExtractionRequirements:
     token_hidden_states: bool = True
     patch_hidden_states: bool = True
     response_hidden_states: bool = False
+    instruction_hidden_states: bool = False
     visual_layout: bool = True
     dgst_capture: bool = True
 
@@ -204,6 +205,7 @@ class ExtractionRequirements:
             self.token_hidden_states
             or self.patch_hidden_states
             or self.response_hidden_states
+            or self.instruction_hidden_states
         )
 
     @classmethod
@@ -219,6 +221,7 @@ class ExtractionRequirements:
             "token_hidden_states",
             "patch_hidden_states",
             "response_hidden_states",
+            "instruction_hidden_states",
             "visual_layout",
             "dgst_capture",
         }
@@ -244,6 +247,9 @@ class ExtractionRequirements:
             token_hidden_states=any(item.token_hidden_states for item in requirements),
             patch_hidden_states=any(item.patch_hidden_states for item in requirements),
             response_hidden_states=any(item.response_hidden_states for item in requirements),
+            instruction_hidden_states=any(
+                item.instruction_hidden_states for item in requirements
+            ),
             visual_layout=any(item.visual_layout for item in requirements),
             dgst_capture=any(item.dgst_capture for item in requirements),
         )

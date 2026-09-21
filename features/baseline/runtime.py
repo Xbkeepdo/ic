@@ -27,6 +27,7 @@ from .extractor import (
     compute_baseline_record,
 )
 from .halloc import HalLocCLIPFeatureExtractor
+from .instruct_lens import build_instruction_lens_probability_cache
 from .projectaway import compute_projectaway_probability_cache
 from .schema import SUPPORTED_BASELINES
 from .svar import normalize_svar_protocols, prepare_official_svar_spans
@@ -42,7 +43,13 @@ def normalize_baseline_methods(methods: Sequence[str] | str) -> tuple[str, ...]:
     normalized = [
         str(value).strip().lower().replace("-", "_") for value in values
     ]
-    aliases = {"project_away": "projectaway", "meta_token": "metatoken"}
+    aliases = {
+        "project_away": "projectaway",
+        "meta_token": "metatoken",
+        "tokengrounding": "token_grounding",
+        "instruction_lens": "instruct_lens",
+        "inslen": "instruct_lens",
+    }
     normalized = [aliases.get(value, value) for value in normalized]
     if "all" in normalized:
         normalized = list(sorted(SUPPORTED_BASELINES))
@@ -185,7 +192,7 @@ class BaselineRuntime:
         return self.clip_extractor
 
     def _ensure_output_layer(self) -> Optional[Any]:
-        if "projectaway" not in self.methods:
+        if not ({"projectaway", "instruct_lens"} & set(self.methods)):
             return None
         if self.output_layer is None:
             self.output_layer = resolve_output_embedding_layer(
@@ -226,8 +233,8 @@ class BaselineRuntime:
                 )
 
         projectaway_cache = None
+        output_layer = self._ensure_output_layer()
         if "projectaway" in self.methods:
-            output_layer = self._ensure_output_layer()
             if output_layer is None:
                 raise RuntimeError("ProjectAway output layer could not be resolved")
             union_ids = tuple(
@@ -256,6 +263,43 @@ class BaselineRuntime:
                     projectaway_cfg.get("vocab_chunk_size", 8192)
                 ),
                 row_chunk_size=int(projectaway_cfg.get("row_chunk_size", 256)),
+            )
+
+        instruct_lens_cache = None
+        if "instruct_lens" in self.methods:
+            if output_layer is None:
+                raise RuntimeError("Instruction Lens output layer could not be resolved")
+            first_output = model_outputs[0]
+            capture = first_output.baseline_capture or {}
+            instruction_states = capture.get(
+                "instruct_lens_instruction_hidden_states"
+            )
+            if instruction_states is None:
+                raise RuntimeError(
+                    "Instruction Lens requested but wrapper returned no instruction states"
+                )
+            inslen_cfg = dict(self.config.get("instruct_lens") or {})
+            target_ids = tuple(
+                dict.fromkeys(
+                    response_ids[int(span["token_indices"][0])]
+                    for span in normalized_spans
+                )
+            )
+            instruct_lens_cache = build_instruction_lens_probability_cache(
+                output_layer=output_layer,
+                instruction_hidden_states=instruction_states,
+                patch_hidden_states=first_output.patch_hidden_states,
+                target_token_ids=target_ids,
+                instruction_layer=int(capture.get(
+                    "instruct_lens_instruction_layer",
+                    inslen_cfg.get("instruction_layer", -2),
+                )),
+                visual_layer=int(capture.get(
+                    "instruct_lens_visual_layer",
+                    inslen_cfg.get("visual_layer", -1),
+                )),
+                tau=float(inslen_cfg.get("tau", 10.0)),
+                chunk_size=int(inslen_cfg.get("chunk_size", 64)),
             )
 
         halloc_cache_file = None
@@ -310,6 +354,8 @@ class BaselineRuntime:
                 occurrence_count=_span_occurrence_count(span, counts),
                 target_token_ids=[response_ids[index] for index in token_indices],
                 projectaway_probability_cache=projectaway_cache,
+                output_layer=output_layer,
+                instruct_lens_probability_cache=instruct_lens_cache,
                 halloc_cache_file=halloc_cache_file,
                 halloc_object_index=token_indices[0],
             )

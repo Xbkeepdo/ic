@@ -656,6 +656,17 @@ def _register_four_gate_aliases() -> None:
                 f"dgst_t_{method}_risk_sqrt_{state_name}_"
                 "capped_topmass_085_per_layer"
             ),
+            f"{method}_risk_sqrt_matched_state_plus_spatial": (
+                f"dgst_t_{method}_risk_sqrt_{state_name}_plus_spatial_per_layer"
+            ),
+            f"{method}_risk_sqrt_matched_state_plus_target_penalty": (
+                f"dgst_t_{method}_risk_sqrt_{state_name}_plus_target_penalty_per_layer"
+            ),
+            f"{method}_risk_sqrt_matched_state_plus_spatial_"
+            "capped_topmass_085": (
+                f"dgst_t_{method}_risk_sqrt_{state_name}_plus_spatial_"
+                "capped_topmass_085_per_layer"
+            ),
             f"{method}_risk_geo_stateupd_lu1": (
                 f"dgst_t_{method}_risk_geo_stateupd_lu1_per_layer"
             ),
@@ -663,6 +674,13 @@ def _register_four_gate_aliases() -> None:
                 f"dgst_t_{method}_risk_cosine_{state_name}_per_layer"
             ),
         }
+        for weight_digit in (2, 4, 6, 8):
+            cost_risk_specs[
+                f"{method}_risk_linear_matched_state_target_w0{weight_digit}"
+            ] = (
+                f"dgst_t_{method}_risk_linear_matched_state_target_w0"
+                f"{weight_digit}_{state_name}_per_layer"
+            )
         for alpha_tenth in range(1, 10):
             alpha_slug = f"0{alpha_tenth}"
             cost_risk_specs[
@@ -681,6 +699,9 @@ def _register_four_gate_aliases() -> None:
         FEATURE_ALIASES[
             f"{method}_risk_sqrt_cosine_matched_state"
         ] = f"{method}_risk_sqrt_matched_state"
+        FEATURE_ALIASES[
+            f"{method}_risk_sqrt_cosine_matched_state_plus_spatial"
+        ] = f"{method}_risk_sqrt_matched_state_plus_spatial"
 
     # VP and VPend use the same construction over different prompt scopes.
     # Prefixing both the training block and serialized field prevents either
@@ -725,6 +746,19 @@ def _register_four_gate_aliases() -> None:
                     f"dgst_t_{scoped_method}_risk_sqrt_{state_name}_"
                     "capped_topmass_085_per_layer"
                 ),
+                f"{scoped_method}_risk_sqrt_matched_state_plus_spatial": (
+                    f"dgst_t_{scoped_method}_risk_sqrt_{state_name}_"
+                    "plus_spatial_per_layer"
+                ),
+                f"{scoped_method}_risk_sqrt_matched_state_plus_target_penalty": (
+                    f"dgst_t_{scoped_method}_risk_sqrt_{state_name}_"
+                    "plus_target_penalty_per_layer"
+                ),
+                f"{scoped_method}_risk_sqrt_matched_state_plus_spatial_"
+                "capped_topmass_085": (
+                    f"dgst_t_{scoped_method}_risk_sqrt_{state_name}_"
+                    "plus_spatial_capped_topmass_085_per_layer"
+                ),
                 f"{scoped_method}_risk_geo_stateupd_lu1": (
                     f"dgst_t_{scoped_method}_risk_geo_stateupd_lu1_per_layer"
                 ),
@@ -754,6 +788,9 @@ def _register_four_gate_aliases() -> None:
             FEATURE_ALIASES[
                 f"{scoped_method}_risk_sqrt_cosine_matched_state"
             ] = f"{scoped_method}_risk_sqrt_matched_state"
+            FEATURE_ALIASES[
+                f"{scoped_method}_risk_sqrt_cosine_matched_state_plus_spatial"
+            ] = f"{scoped_method}_risk_sqrt_matched_state_plus_spatial"
 
 
 def _register_ads_cgc_aliases() -> None:
@@ -839,6 +876,10 @@ for _four_gate_method in (
     )
     _four_gate_cost_aliases = [
         ("sqrt_matched_state", "sqrt_cosine_matched_state"),
+        (
+            "sqrt_matched_state_plus_spatial",
+            "sqrt_cosine_matched_state_plus_spatial",
+        ),
         ("cosine_matched_state", "cosine_matched_state"),
         ("geo_stateupd_lu1", "geo_stateupd_lu1"),
         *[
@@ -1250,6 +1291,10 @@ def _four_gate_risk_block(feat: dict, block: str) -> np.ndarray:
     cost_mode = explicit_cost_mode or feat.get("dgst_t_cost")
     if cost_mode == "geo_stateupd_lu1":
         key = f"dgst_t_{method}_risk_geo_stateupd_lu1_per_layer"
+    elif cost_mode == "sqrt_cosine_matched_state_plus_spatial":
+        _scope_prefix, base_method = _four_gate_scope_and_method(method)
+        state_name = "hmid" if base_method.startswith("hmid_") else "hpre"
+        key = f"dgst_t_{method}_risk_sqrt_{state_name}_plus_spatial_per_layer"
     elif str(cost_mode).startswith("sqrt_stateupd_alpha0"):
         key = f"dgst_t_{method}_risk_{cost_mode}_per_layer"
     elif cost_mode == "cosine_matched_state":

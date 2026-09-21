@@ -15,6 +15,7 @@ from utils.config_utils import (
     extraction_mode_flags,
     get_extraction_model_cfg,
     get_model_cfg,
+    load_config,
     resolve_run_config,
 )
 from utils.generation_provenance import build_generation_manifest
@@ -67,6 +68,21 @@ def _minimal_config() -> dict:
 
 
 class PipelineConfigTests(unittest.TestCase):
+    def test_yaml_config_extends_deep_merges_relative_base(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            (root / "base.yaml").write_text(
+                "outer:\n  keep: 1\n  replace: 2\nitems: [base]\n",
+                encoding="utf-8",
+            )
+            (root / "child.yaml").write_text(
+                "extends: base.yaml\nouter:\n  replace: 3\nitems: [child]\n",
+                encoding="utf-8",
+            )
+            config = load_config(str(root / "child.yaml"))
+        self.assertEqual(config["outer"], {"keep": 1, "replace": 3})
+        self.assertEqual(config["items"], ["child"])
+
     def test_vpend_experiment_mode_resolves_post_visual_prompt_scope(self) -> None:
         config = {
             "models": {"model_a": {"hf_name": "unused"}},

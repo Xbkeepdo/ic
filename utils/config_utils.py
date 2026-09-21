@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import copy
 import shlex
+from pathlib import Path
 from typing import Any, Mapping, Optional
 
 import yaml
@@ -157,12 +158,34 @@ _RUN_DEFAULTS = {
 }
 
 
-def load_config(path: str = "configs/model_configs.yaml") -> dict:
-    with open(path, "r") as f:
+def load_config(
+    path: str = "configs/model_configs.yaml",
+    *,
+    _inheritance_stack: tuple[Path, ...] = (),
+) -> dict:
+    """Load YAML, optionally deep-merging a relative ``extends`` base file."""
+
+    config_path = Path(path).expanduser().resolve()
+    if config_path in _inheritance_stack:
+        chain = " -> ".join(str(value) for value in (*_inheritance_stack, config_path))
+        raise ValueError(f"Circular YAML config inheritance: {chain}")
+    with config_path.open("r") as f:
         config = yaml.safe_load(f) or {}
     if not isinstance(config, dict):
         raise ValueError(f"YAML config must contain a mapping, got {type(config).__name__}")
-    return config
+    extends = config.pop("extends", None)
+    if extends in (None, ""):
+        return config
+    if not isinstance(extends, str):
+        raise ValueError("YAML config 'extends' must be a relative or absolute path")
+    base_path = Path(extends).expanduser()
+    if not base_path.is_absolute():
+        base_path = config_path.parent / base_path
+    base = load_config(
+        str(base_path),
+        _inheritance_stack=(*_inheritance_stack, config_path),
+    )
+    return _deep_merge(base, config)
 
 
 def resolve_run_config(

@@ -22,6 +22,9 @@ from models.dgst_capture import (
     final_normalized_hidden_slice,
     hidden_states_from_captures,
     hidden_states_from_layer_outputs,
+    positions_hidden_states_from_captures,
+    positions_hidden_states_from_layer_outputs,
+    resolve_prompt_positions,
     run_forward_with_dgst_captures,
     run_forward_with_layer_hidden_captures,
 )
@@ -214,6 +217,7 @@ class QwenVLWrapper(BaseLVLMWrapper):
                 capture_all_layers=(
                     requirements.token_hidden_states
                     or requirements.patch_hidden_states
+                    or requirements.instruction_hidden_states
                 ),
                 **inputs,
             )
@@ -306,6 +310,52 @@ class QwenVLWrapper(BaseLVLMWrapper):
             else None
         )
 
+        instruction_hidden_states = None
+        instruct_lens_object_hidden_state = None
+        if requirements.instruction_hidden_states:
+            prompt_positions = resolve_prompt_positions(
+                full_input_ids=input_ids.tolist(),
+                prompt_tokenized_length=prompt_tokenized_length,
+                image_token_id=self._image_token_id,
+                visual_start=img_start,
+                visual_end=img_end,
+            )
+            instruction_positions = [
+                position for position in prompt_positions if position >= int(img_end)
+            ]
+            if len(instruction_positions) < 4:
+                raise RuntimeError(
+                    "Instruction Lens requires at least four post-visual prompt tokens"
+                )
+            if captures is not None:
+                instruction_hidden_states = positions_hidden_states_from_captures(
+                    captures,
+                    positions=instruction_positions,
+                )
+            elif layer_outputs is not None:
+                instruction_hidden_states = positions_hidden_states_from_layer_outputs(
+                    layer_outputs,
+                    positions=instruction_positions,
+                )
+            elif out.hidden_states is not None:
+                instruction_hidden_states = torch.stack(
+                    [state[0, instruction_positions, :] for state in out.hidden_states[1:]],
+                    dim=0,
+                )
+            else:
+                raise RuntimeError(
+                    "Instruction Lens requested but instruction states were not captured"
+                )
+            instruction_hidden_states = instruction_hidden_states.cpu()
+            instruct_lens_object_hidden_state = final_normalized_hidden_slice(
+                model=self.model,
+                out=out,
+                dgst_captures=captures,
+                layer_outputs=layer_outputs,
+                start=expanded_seq_len - 1,
+                end=expanded_seq_len,
+            )[0].cpu()
+
         pred_token_id = out.logits[0, -1].argmax().item()
         pred_token_str = self.tokenizer.decode([pred_token_id], skip_special_tokens=False)
         last_logits = (
@@ -332,6 +382,7 @@ class QwenVLWrapper(BaseLVLMWrapper):
                 captures=captures,
                 visual_start=img_start,
                 visual_end=img_end,
+                visual_grid=visual_grid,
                 image_token_id=self._image_token_id,
                 target_token_id=dgst_target_id,
                 prediction_position=expanded_seq_len - 1,
@@ -346,6 +397,19 @@ class QwenVLWrapper(BaseLVLMWrapper):
             "visual_end": int(img_end),
             "attention_requirement": requirements.attention.value,
         }
+        if instruction_hidden_states is not None:
+            baseline_capture.update(
+                {
+                    "instruct_lens_instruction_hidden_states": instruction_hidden_states,
+                    "instruct_lens_object_hidden_state": instruct_lens_object_hidden_state,
+                    # The released InsLen LLaVA settings use 75% depth for
+                    # visual evidence, ~69% for instruction context, and the
+                    # final decoder output for the causal object state.
+                    "instruct_lens_visual_layer": 20,
+                    "instruct_lens_instruction_layer": 18,
+                    "instruct_lens_object_layer": 28,
+                }
+            )
 
         return ModelOutput(
             token_id=pred_token_id,
@@ -675,6 +739,7 @@ def _compute_dgst_result_from_captures(
     captures: Sequence[dict[str, Any]],
     visual_start: int,
     visual_end: int,
+    visual_grid: Optional[Tuple[int, int]],
     image_token_id: int,
     target_token_id: int,
     prediction_position: int,
@@ -690,6 +755,7 @@ def _compute_dgst_result_from_captures(
         captures=captures,
         visual_start=int(visual_start),
         visual_end=int(visual_end),
+        visual_grid=visual_grid,
         image_token_id=int(image_token_id),
         target_token_ids=[int(target_token_id)],
         prediction_positions=[int(prediction_position)],
@@ -744,6 +810,12 @@ def _compute_dgst_result_from_captures(
         four_gate_support_modes=cfg.get("support_modes"),
         four_gate_source_tau_values=cfg.get("source_tau_values"),
         four_gate_transport_top_k_values=cfg.get("transport_top_k_values"),
+        four_gate_spatial_cost_semantic_weight=float(
+            cfg.get("spatial_cost_semantic_weight", 1.0)
+        ),
+        four_gate_spatial_cost_distance_weight=float(
+            cfg.get("spatial_cost_distance_weight", 1.0)
+        ),
         compute_prompt_cafe=bool(cfg.get("compute_prompt_cafe", False)),
         prompt_cafe_temperature=float(cfg.get("prompt_cafe_temperature", 10.0)),
         prompt_cafe_layer=int(cfg.get("prompt_cafe_layer", 22)),

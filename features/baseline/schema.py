@@ -15,7 +15,15 @@ import numpy as np
 
 BASELINE_SCHEMA_VERSION = "1.0"
 SUPPORTED_BASELINES = frozenset(
-    {"metatoken", "svar", "dhcp", "projectaway", "halloc"}
+    {
+        "metatoken",
+        "svar",
+        "dhcp",
+        "projectaway",
+        "halloc",
+        "token_grounding",
+        "instruct_lens",
+    }
 )
 
 
@@ -118,7 +126,7 @@ def get_baseline_payload(record: Mapping[str, Any], name: str) -> Mapping[str, A
 
 
 def baseline_vector(record: Mapping[str, Any], name: str) -> np.ndarray:
-    """Return the canonical dense vector for MetaToken or SVAR records."""
+    """Return the canonical dense vector for a vector-valued baseline."""
 
     normalized = str(name).strip().lower()
     payload = get_baseline_payload(record, normalized)

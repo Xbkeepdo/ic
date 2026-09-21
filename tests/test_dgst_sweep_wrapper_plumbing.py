@@ -1,4 +1,4 @@
-"""Regression tests for DGST source-tau / transport-top-k config plumbing."""
+"""Regression tests for DGST sweep and spatial-cost config plumbing."""
 
 from __future__ import annotations
 
@@ -12,10 +12,20 @@ GENERIC_SWEEP_KEYS = {
     "four_gate_transport_top_k_values",
     "four_gate_capped_topmass_alphas",
 }
+GENERIC_SPATIAL_KEYS = {
+    "visual_grid",
+    "four_gate_spatial_cost_semantic_weight",
+    "four_gate_spatial_cost_distance_weight",
+}
 DIRECT_SWEEP_KEYS = {
     "source_tau_values",
     "transport_top_k_values",
     "capped_topmass_alphas",
+}
+DIRECT_SPATIAL_KEYS = {
+    "visual_grid",
+    "spatial_cost_semantic_weight",
+    "spatial_cost_distance_weight",
 }
 
 
@@ -53,6 +63,22 @@ def test_all_model_batch_paths_forward_sweep_lists() -> None:
             assert not missing, f"{path.name} does not forward {sorted(missing)}"
 
 
+def test_all_model_batch_paths_forward_spatial_cost_inputs() -> None:
+    wrapper_paths = [
+        ROOT / "models" / "internvl_wrapper.py",
+        ROOT / "models" / "llava_wrapper.py",
+        ROOT / "models" / "qwen_wrapper.py",
+        ROOT / "models" / "qwen3_vl_wrapper.py",
+        ROOT / "models" / "llava_onevision_wrapper.py",
+    ]
+    for path in wrapper_paths:
+        calls = _calls(path, "compute_dgst_t_batch_from_captures")
+        assert calls, f"No DGST batch call found in {path.name}"
+        for call in calls:
+            missing = GENERIC_SPATIAL_KEYS - _keyword_names(call)
+            assert not missing, f"{path.name} does not forward {sorted(missing)}"
+
+
 def test_direct_four_gate_paths_forward_sweep_lists() -> None:
     for filename in ("internvl_wrapper.py", "llava_wrapper.py"):
         path = ROOT / "models" / filename
@@ -60,6 +86,16 @@ def test_direct_four_gate_paths_forward_sweep_lists() -> None:
         assert calls, f"No direct four-gate call found in {filename}"
         for call in calls:
             missing = DIRECT_SWEEP_KEYS - _keyword_names(call)
+            assert not missing, f"{filename} does not forward {sorted(missing)}"
+
+
+def test_direct_four_gate_paths_forward_spatial_cost_inputs() -> None:
+    for filename in ("internvl_wrapper.py", "llava_wrapper.py"):
+        path = ROOT / "models" / filename
+        calls = _calls(path, "compute_four_gate_dgst_batch_from_captures")
+        assert calls, f"No direct four-gate call found in {filename}"
+        for call in calls:
+            missing = DIRECT_SPATIAL_KEYS - _keyword_names(call)
             assert not missing, f"{filename} does not forward {sorted(missing)}"
 
 
@@ -83,3 +119,34 @@ def test_prompt_target_options_forward_sweep_lists() -> None:
     }
     missing = GENERIC_SWEEP_KEYS - option_keys
     assert not missing, f"prompt_target._dgst_options omits {sorted(missing)}"
+
+
+def test_prompt_target_forwards_spatial_cost_inputs() -> None:
+    path = ROOT / "models" / "prompt_target.py"
+    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    function = next(
+        node
+        for node in tree.body
+        if isinstance(node, ast.FunctionDef) and node.name == "_dgst_options"
+    )
+    returned_dict = next(
+        node.value
+        for node in ast.walk(function)
+        if isinstance(node, ast.Return) and isinstance(node.value, ast.Dict)
+    )
+    option_keys = {
+        key.value
+        for key in returned_dict.keys
+        if isinstance(key, ast.Constant) and isinstance(key.value, str)
+    }
+    required_options = {
+        "four_gate_spatial_cost_semantic_weight",
+        "four_gate_spatial_cost_distance_weight",
+    }
+    missing = required_options - option_keys
+    assert not missing, f"prompt_target._dgst_options omits {sorted(missing)}"
+
+    calls = _calls(path, "compute_dgst_t_batch_from_captures")
+    assert calls
+    for call in calls:
+        assert "visual_grid" in _keyword_names(call)

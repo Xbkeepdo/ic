@@ -21,8 +21,13 @@ from .metatoken import (
 )
 from .projectaway import compute_projectaway_internal_confidence
 from .projectaway import ProjectAwayProbabilityCache
+from .instruct_lens import (
+    InstructionLensProbabilityCache,
+    compute_instruction_lens_features,
+)
 from .schema import attach_baseline, make_baseline_record
 from .svar import compute_svar_features
+from .token_grounding import compute_token_grounding_features
 
 
 @dataclass
@@ -39,6 +44,8 @@ class BaselineExtractionContext:
     unembedding_bias: Optional[torch.Tensor] = None
     projectaway_normalizer: Optional[Callable[[torch.Tensor], torch.Tensor]] = None
     projectaway_probability_cache: Optional[ProjectAwayProbabilityCache] = None
+    output_layer: Optional[Any] = None
+    instruct_lens_probability_cache: Optional[InstructionLensProbabilityCache] = None
     clip_visual_features: Optional[torch.Tensor] = None
     halloc_cache_file: Optional[str] = None
     halloc_object_index: Optional[int] = None
@@ -50,10 +57,20 @@ def baseline_extraction_requirements(
     """Return the least wrapper capture needed for the selected baselines."""
 
     selected = {str(method).strip().lower() for method in methods}
-    unknown = selected - {"metatoken", "svar", "dhcp", "projectaway", "halloc"}
+    unknown = selected - {
+        "metatoken",
+        "svar",
+        "dhcp",
+        "projectaway",
+        "halloc",
+        "token_grounding",
+        "instruct_lens",
+    }
     if unknown:
         raise ValueError(f"Unknown baselines: {sorted(unknown)}")
-    needs_attention = bool(selected & {"metatoken", "svar", "dhcp"})
+    needs_attention = bool(
+        selected & {"metatoken", "svar", "dhcp", "token_grounding"}
+    )
     return ExtractionRequirements(
         attention=(
             AttentionRequirement.PER_HEAD
@@ -64,13 +81,16 @@ def baseline_extraction_requirements(
         # the one full-caption teacher-forced pass requested below.  No
         # baseline consumes per-object full-vocabulary logits.
         logits=False,
-        token_hidden_states=False,
-        patch_hidden_states="projectaway" in selected,
+        token_hidden_states=bool(selected & {"token_grounding", "instruct_lens"}),
+        patch_hidden_states=bool(
+            selected & {"projectaway", "token_grounding", "instruct_lens"}
+        ),
         # Current wrappers compute compact MetaToken statistics together with
         # the lightweight full-caption hidden pass.  This remains one extra
         # no-attention pass, never one pass per object token.
         response_hidden_states=bool(selected & {"metatoken", "halloc"}),
-        visual_layout="dhcp" in selected,
+        instruction_hidden_states="instruct_lens" in selected,
+        visual_layout=bool(selected & {"dhcp", "token_grounding"}),
         dgst_capture=False,
     )
 
@@ -224,6 +244,57 @@ def compute_baseline_record(
                 ),
             )
         attach_baseline(record, "projectaway", features.as_payload())
+
+    if "token_grounding" in selected:
+        features = compute_token_grounding_features(
+            text_to_patch_attn=model_out.text_to_patch_attn,
+            token_hidden_states=model_out.token_hidden_states,
+            patch_hidden_states=model_out.patch_hidden_states,
+            visual_grid=model_out.visual_grid,
+            config=cfg.get("token_grounding"),
+        )
+        attach_baseline(record, "token_grounding", features.as_payload())
+
+    if "instruct_lens" in selected:
+        capture = model_out.baseline_capture or {}
+        instruction_states = capture.get("instruct_lens_instruction_hidden_states")
+        if instruction_states is None:
+            raise ValueError(
+                "Instruction Lens requires instruction hidden states in baseline_capture"
+            )
+        if context.output_layer is None:
+            raise ValueError("Instruction Lens requires the model output embedding layer")
+        inslen_cfg = dict(cfg.get("instruct_lens") or {})
+        features = compute_instruction_lens_features(
+            output_layer=context.output_layer,
+            instruction_hidden_states=instruction_states,
+            token_hidden_states=model_out.token_hidden_states,
+            patch_hidden_states=model_out.patch_hidden_states,
+            target_token_id=target_ids[0],
+            instruction_layer=int(capture.get(
+                "instruct_lens_instruction_layer",
+                inslen_cfg.get("instruction_layer", -2),
+            )),
+            object_layer=int(capture.get(
+                "instruct_lens_object_layer",
+                inslen_cfg.get("object_layer", -1),
+            )),
+            visual_layer=int(capture.get(
+                "instruct_lens_visual_layer",
+                inslen_cfg.get("visual_layer", -1),
+            )),
+            k=int(inslen_cfg.get("k", 16)),
+            m=int(inslen_cfg.get("m", 4)),
+            tau=float(inslen_cfg.get("tau", 10.0)),
+            alpha=float(inslen_cfg.get("alpha", 2.0)),
+            w=float(inslen_cfg.get("w", 0.4)),
+            chunk_size=int(inslen_cfg.get("chunk_size", 64)),
+            probability_cache=context.instruct_lens_probability_cache,
+            object_hidden_state=capture.get(
+                "instruct_lens_object_hidden_state"
+            ),
+        )
+        attach_baseline(record, "instruct_lens", features.as_payload())
 
     if "halloc" in selected:
         object_index = (

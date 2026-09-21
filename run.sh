@@ -6,8 +6,8 @@ REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$REPO_DIR"
 
 MODEL="${MODEL:-qwen2_5_vl_7b}"  # llava_1_5_7b  qwen2_5_vl_7b
-OUTPUT="${OUTPUT:-outputs/${MODEL}/COCO4000-512-CAPPEDSWEEP}"
-CONFIG="${CONFIG:-configs/model_configs_server_fj01.yaml}"
+OUTPUT="${OUTPUT:-outputs/${MODEL}/COCO4000-COST-spatial}"
+CONFIG="${CONFIG:-configs/model_configs_unified.yaml}"
 
 CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-0,1}"
 DEVICE="${DEVICE:-cuda:0}"

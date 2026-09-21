@@ -24,12 +24,15 @@ from features.dgst_t import (
     _capped_topmass_indices,
     _capped_topmass_union_indices,
     _gaussian_mad_gate,
+    _normalized_visual_spatial_distance_matrix,
+    _prepare_four_gate_cost_problem,
     _prepare_transport_problem_for_state_cost,
     _solve_transport_problem,
     _stable_topk_indices,
     _topk_union_indices,
 )
 from features.extractor import _build_four_gate_feature_record
+from features.qa_extractor import _compact_dgst
 from models.dgst_capture import (
     attention_row_from_capture,
     chunked_eager_attention_forward,
@@ -44,6 +47,80 @@ from train_feature_sets import build_selected_matrix, parse_feature_set
 
 
 class FourGateDGSTTests(unittest.TestCase):
+    def test_weighted_target_cost_matches_linear_formula(self) -> None:
+        states = torch.tensor([[1.0, 0.0], [0.0, 1.0]])
+        cosines = torch.tensor([0.5, -0.5])
+        kwargs = dict(
+            source_dist=torch.tensor([0.3, 0.7]),
+            target_dist=torch.tensor([0.6, 0.4]),
+            matched_states=states,
+            hmid_states=states,
+            hout_states=states,
+            update_states=states,
+            support=torch.arange(2),
+            target_cosines=cosines,
+        )
+        pairwise = torch.tensor([[0.0, 1.0], [1.0, 0.0]])
+        penalties = 1.0 - cosines
+        for digit in (2, 4, 6, 8):
+            weight = digit / 10.0
+            _, _, cost = _prepare_four_gate_cost_problem(
+                cost_mode=f"linear_matched_state_target_w0{digit}", **kwargs
+            )
+            expected = weight * pairwise + (1 - weight) * (
+                penalties[:, None] + penalties[None, :]
+            )
+            self.assertTrue(torch.allclose(torch.from_numpy(cost), expected))
+            semantic = _prepare_four_gate_cost_problem(
+                cost_mode="cosine_matched_state", **kwargs
+            )
+            local_penalty = (1.0 - cosines).numpy()
+            shift = float(((semantic[0] + semantic[1]) * local_penalty).sum())
+            expected_risk = (
+                weight * _solve_transport_problem(semantic, "emd")
+                + (1 - weight) * shift
+            )
+            self.assertAlmostEqual(
+                _solve_transport_problem((semantic[0], semantic[1], cost), "emd"),
+                expected_risk,
+                places=6,
+            )
+
+    def test_target_penalty_cost_adds_both_marginal_expectations(self) -> None:
+        states = torch.tensor([[1.0, 0.0], [0.0, 1.0], [-1.0, 0.0]])
+        source = torch.tensor([0.2, 0.5, 0.3])
+        target = torch.tensor([0.4, 0.1, 0.5])
+        support = torch.arange(3)
+        cosines = torch.tensor([1.0, 0.0, -1.0])
+        kwargs = dict(
+            source_dist=source,
+            target_dist=target,
+            matched_states=states,
+            hmid_states=states,
+            hout_states=states,
+            update_states=states,
+            support=support,
+        )
+        base = _prepare_four_gate_cost_problem(
+            cost_mode="sqrt_matched_state", **kwargs
+        )
+        augmented = _prepare_four_gate_cost_problem(
+            cost_mode="sqrt_matched_state_plus_target_penalty",
+            target_cosines=cosines,
+            **kwargs,
+        )
+        penalty = (1.0 - cosines).numpy()
+        self.assertTrue(
+            torch.allclose(
+                torch.from_numpy(augmented[2]),
+                torch.from_numpy(base[2] + penalty[:, None] + penalty[None, :]),
+            )
+        )
+        base_risk = _solve_transport_problem(base, "emd")
+        augmented_risk = _solve_transport_problem(augmented, "emd")
+        expected_shift = float((source + target).dot(1.0 - cosines))
+        self.assertAlmostEqual(augmented_risk - base_risk, expected_shift, places=6)
+
     def assert_nested_exact(self, left, right, path="root") -> None:
         if torch.is_tensor(left) or torch.is_tensor(right):
             self.assertTrue(
@@ -198,6 +275,172 @@ class FourGateDGSTTests(unittest.TestCase):
             )
             layer.bias.copy_(torch.tensor([0.1, -0.2, 0.3, 0.0]))
         return layer
+
+    def test_visual_spatial_distance_uses_grid_diagonal_and_zero_prompt_cost(self):
+        distance = _normalized_visual_spatial_distance_matrix(
+            visual_grid=(2, 2),
+            visual_start=10,
+            visual_end=14,
+            support_positions=[10, 11, 12, 13, 20],
+            device=torch.device("cpu"),
+        )
+        side = 2.0 ** -0.5
+        expected = torch.tensor(
+            [
+                [0.0, side, side, 1.0, 0.0],
+                [side, 0.0, 1.0, side, 0.0],
+                [side, 1.0, 0.0, side, 0.0],
+                [1.0, side, side, 0.0, 0.0],
+                [0.0, 0.0, 0.0, 0.0, 0.0],
+            ],
+            dtype=torch.float32,
+        )
+        self.assertTrue(torch.allclose(distance, expected, atol=1e-7))
+
+    def test_spatial_cost_mode_adds_normalized_grid_distance_to_exact_emd(self):
+        layer = self._output_layer()
+        h_prev = torch.tensor(
+            [[[1.0, 0.0], [0.8, 0.2], [0.0, 1.0], [-1.0, 0.0], [0.4, 0.6]]],
+            dtype=torch.float32,
+        )
+        o_attn = torch.zeros_like(h_prev)
+        o_ffn = torch.zeros_like(h_prev)
+        o_ffn[0, 4] = torch.tensor([0.3, -0.2])
+        attention = torch.zeros(1, 2, 5, 5, dtype=torch.float32)
+        attention[0, 0, 4, :4] = torch.tensor([0.55, 0.25, 0.15, 0.05])
+        attention[0, 1, 4, :4] = torch.tensor([0.05, 0.15, 0.25, 0.55])
+        capture = {
+            "h_prev": h_prev,
+            "h_mid": h_prev + o_attn,
+            "o_attn": o_attn,
+            "o_ffn": o_ffn,
+            "attn_weights": attention,
+        }
+        result = compute_four_gate_dgst_batch_from_captures(
+            model=SimpleNamespace(get_output_embeddings=lambda: layer),
+            captures=[capture],
+            visual_start=0,
+            visual_end=4,
+            visual_grid=(2, 2),
+            target_token_ids=[1],
+            prediction_positions=[4],
+            transport_top_k=4,
+            cost_mode="sqrt_matched_state",
+            cost_modes=[
+                "sqrt_matched_state_plus_spatial",
+                "sqrt_matched_state_plus_target_penalty",
+            ],
+            enabled_methods=[RAW_ATTENTION_METHOD],
+        )[0]
+
+        source = result["dgst_t_source_dist_per_layer"][0]
+        target = result["dgst_t_attention_support_per_layer"][0]
+        support = _topk_union_indices(source, target, 4)
+        semantic_problem = _prepare_transport_problem_for_state_cost(
+            source_dist=source,
+            target_dist=target,
+            states=h_prev[0, :4],
+            support=support,
+            sqrt_cosine=True,
+            keep_on_device=True,
+        )
+        local_source, local_target, semantic_cost = semantic_problem
+        spatial_cost = _normalized_visual_spatial_distance_matrix(
+            visual_grid=(2, 2),
+            visual_start=0,
+            visual_end=4,
+            support_positions=[0, 1, 2, 3],
+            device=torch.device("cpu"),
+        ).index_select(0, support).index_select(1, support)
+        expected_risk = _solve_transport_problem(
+            (local_source, local_target, semantic_cost + spatial_cost),
+            "emd",
+        )
+        actual_key = (
+            "dgst_t_raw_attention_risk_sqrt_hpre_plus_spatial_per_layer"
+        )
+        self.assertAlmostEqual(
+            float(result[actual_key][0]), expected_risk, places=6
+        )
+        target_cosines = F.cosine_similarity(
+            h_prev[0, 4].unsqueeze(0), h_prev[0, :4], dim=-1
+        )
+        penalty = 1.0 - target_cosines
+        target_penalty_key = (
+            "dgst_t_raw_attention_risk_sqrt_hpre_plus_target_penalty_per_layer"
+        )
+        base_risk = float(result["dgst_t_raw_attention_risk_sqrt_hpre_per_layer"][0])
+        self.assertAlmostEqual(
+            float(result[target_penalty_key][0]) - base_risk,
+            float(
+                local_source.dot(penalty.index_select(0, support))
+                + local_target.dot(penalty.index_select(0, support))
+            ),
+            places=5,
+        )
+        self.assertIn(
+            "dgst_t_raw_attention_risk_sqrt_hpre_per_layer", result
+        )
+        self.assertEqual(
+            result["dgst_t_spatial_cost_visual_grid"], [2, 2]
+        )
+        self.assertEqual(result["dgst_t_spatial_cost_semantic_weight"], 1.0)
+        self.assertEqual(result["dgst_t_spatial_cost_distance_weight"], 1.0)
+
+        record = _build_four_gate_feature_record(
+            image_id=7,
+            span={"word": "object", "label": 0},
+            response_index=4,
+            target_token_id=1,
+            model_out=SimpleNamespace(token_id=1),
+            dgst_t=result,
+        )
+        self.assertEqual(record["dgst_t_spatial_cost_visual_grid"], [2, 2])
+        qa_record = _compact_dgst(result)
+        self.assertEqual(
+            qa_record["metadata"]["dgst_t_spatial_cost_visual_grid"],
+            [2, 2],
+        )
+        self.assertTrue(
+            torch.equal(
+                torch.from_numpy(
+                    qa_record[RAW_ATTENTION_METHOD][
+                        "risk_sqrt_matched_state_plus_spatial"
+                    ]
+                ),
+                result[actual_key],
+            )
+        )
+        self.assertTrue(
+            torch.equal(
+                torch.from_numpy(
+                    qa_record[RAW_ATTENTION_METHOD][
+                        "risk_sqrt_matched_state_plus_target_penalty"
+                    ]
+                ),
+                result[target_penalty_key],
+            )
+        )
+        matrix, labels = build_selected_matrix(
+            [record],
+            parse_feature_set(
+                "raw_attention_risk_sqrt_matched_state_plus_spatial"
+            ),
+        )
+        self.assertEqual(matrix.shape, (1, 1))
+        self.assertEqual(labels.tolist(), [0])
+        self.assertAlmostEqual(float(matrix[0, 0]), expected_risk, places=6)
+        target_penalty_matrix, _ = build_selected_matrix(
+            [record],
+            parse_feature_set(
+                "raw_attention_risk_sqrt_matched_state_plus_target_penalty"
+            ),
+        )
+        self.assertAlmostEqual(
+            float(target_penalty_matrix[0, 0]),
+            float(result[target_penalty_key][0]),
+            places=6,
+        )
 
     def test_joint_projection_matches_full_vocabulary_softmax(self) -> None:
         layer = self._output_layer()
@@ -687,9 +930,10 @@ class FourGateDGSTTests(unittest.TestCase):
             "captures": [capture],
             "visual_start": 0,
             "visual_end": patches,
+            "visual_grid": (3, 4),
             "prompt_positions": [patches],
-            "target_token_ids": [1],
-            "prediction_positions": [patches + 1],
+            "target_token_ids": [1, 1],
+            "prediction_positions": [patches, patches + 1],
             "enabled_methods": [
                 "hpre_raw_logit_gauss",
                 "hpre_softmax_prob_gauss",
@@ -697,6 +941,8 @@ class FourGateDGSTTests(unittest.TestCase):
             "support_modes": ["vv"],
             "cost_modes": [
                 "sqrt_matched_state",
+                "sqrt_matched_state_plus_target_penalty",
+                "sqrt_matched_state_plus_spatial",
                 "cosine_matched_state",
                 "geo_stateupd_lu1",
             ],

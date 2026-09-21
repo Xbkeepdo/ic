@@ -787,6 +787,16 @@ def _compact_dgst(result: dict) -> dict:
         "matrices": matrices_by_scope[primary_scope],
         "matrices_by_scope": matrices_by_scope,
     }
+    for key in (
+        "dgst_t_cost_modes",
+        "dgst_t_spatial_cost_semantic_weight",
+        "dgst_t_spatial_cost_distance_weight",
+        "dgst_t_spatial_cost_visual_grid",
+        "dgst_t_spatial_cost_distance_normalization",
+        "dgst_t_spatial_cost_prompt_policy",
+    ):
+        if key in result:
+            compact["metadata"][key] = result[key]
     for scope_name, _raw_prefix, _compact_prefix in scope_specs:
         for suffix in ("support_size", "support_positions"):
             key = f"dgst_t_{scope_name}_{suffix}"
@@ -857,6 +867,10 @@ def _compact_dgst(result: dict) -> dict:
                 ]
                 if component == f"risk_sqrt_{state}":
                     component = "risk_sqrt_matched_state"
+                elif component == f"risk_sqrt_{state}_plus_spatial":
+                    component = "risk_sqrt_matched_state_plus_spatial"
+                elif component == f"risk_sqrt_{state}_plus_target_penalty":
+                    component = "risk_sqrt_matched_state_plus_target_penalty"
                 elif component == f"risk_cosine_{state}":
                     component = "risk_cosine_matched_state"
                 branch[component] = _as_float32_array(value)

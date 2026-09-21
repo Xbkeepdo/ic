@@ -48,6 +48,7 @@ QA_DGST_METHODS = (
 QA_DGST_COMPONENTS = (
     "risk",
     "risk_sqrt_matched_state",
+    "risk_sqrt_matched_state_plus_spatial",
     "risk_cosine_matched_state",
     "risk_geo_stateupd_lu1",
     "target_cosine",

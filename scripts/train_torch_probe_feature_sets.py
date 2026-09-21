@@ -69,6 +69,8 @@ class TorchProbeConfig:
     fixed_threshold: float = 0.5
     threshold_reporting: tuple[str, ...] = ("fixed_0.5", "train_f1")
     checkpoint_selection: str = "minimum_train_loss"
+    batch_norm: bool = True
+    standardize_input: bool = False
 
 
 class MatrixDataset(Dataset):
@@ -86,13 +88,15 @@ class MatrixDataset(Dataset):
 
 
 class DGSTStyleProbe(nn.Module):
-    def __init__(self, input_dim: int, hidden_sizes: Sequence[int], dropout: float):
+    def __init__(self, input_dim: int, hidden_sizes: Sequence[int], dropout: float,
+                 batch_norm: bool = True):
         super().__init__()
         layers = []
         prev_dim = int(input_dim)
         for hidden_dim in hidden_sizes:
             layers.append(nn.Linear(prev_dim, int(hidden_dim)))
-            layers.append(nn.BatchNorm1d(int(hidden_dim)))
+            if batch_norm:
+                layers.append(nn.BatchNorm1d(int(hidden_dim)))
             layers.append(nn.ReLU())
             layers.append(nn.Dropout(float(dropout)))
             prev_dim = int(hidden_dim)
@@ -369,6 +373,19 @@ def train_and_evaluate_probe(
     _set_seed(config.seed)
     os.makedirs(output_dir, exist_ok=True)
 
+    if config.standardize_input:
+        train64 = np.asarray(X_train, dtype=np.float64)
+        mean = train64.mean(axis=0)
+        std = train64.std(axis=0)
+        scale = np.where(std > 1e-12, std, 1.0)
+        if not np.isfinite(mean).all() or not np.isfinite(scale).all():
+            raise ValueError("Input standardization statistics must be finite")
+        X_train = ((train64 - mean) / scale).astype(np.float32)
+        X_test = ((np.asarray(X_test, dtype=np.float64) - mean) / scale).astype(np.float32)
+        if not np.isfinite(X_train).all() or not np.isfinite(X_test).all():
+            raise ValueError("Standardized inputs must be finite")
+        np.savez(os.path.join(output_dir, "input_scaler.npz"), mean=mean, scale=scale)
+
     train_targets = _targets_for_positive_class(y_train, config.positive_class)
     test_targets = _targets_for_positive_class(y_test, config.positive_class)
 
@@ -382,6 +399,7 @@ def train_and_evaluate_probe(
         input_dim=int(X_train.shape[1]),
         hidden_sizes=config.hidden_sizes,
         dropout=config.dropout,
+        batch_norm=config.batch_norm,
     ).to(device)
     criterion = nn.BCEWithLogitsLoss()
     optimizer = torch.optim.Adam(

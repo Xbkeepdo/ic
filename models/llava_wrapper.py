@@ -25,6 +25,8 @@ from models.dgst_capture import (
     final_normalized_hidden_slice,
     hidden_states_from_captures,
     hidden_states_from_layer_outputs,
+    positions_hidden_states_from_captures,
+    positions_hidden_states_from_layer_outputs,
     merged_position_for_tokenized_position,
     pre_token_prediction_positions,
     resolve_prompt_positions,
@@ -201,6 +203,7 @@ class LLaVAWrapper(BaseLVLMWrapper):
                 capture_all_layers=(
                     requirements.token_hidden_states
                     or requirements.patch_hidden_states
+                    or requirements.instruction_hidden_states
                 ),
                 **inputs,
             )
@@ -318,6 +321,9 @@ class LLaVAWrapper(BaseLVLMWrapper):
                     captures=captures,
                     visual_start=img_start,
                     visual_end=img_end,
+                    visual_grid=self._visual_grid_for_output(
+                        inputs, img_start, img_end
+                    ),
                     target_token_ids=[dgst_target_id],
                     prediction_positions=[expanded_seq_len - 1],
                     prompt_positions=prompt_positions_override,
@@ -339,6 +345,12 @@ class LLaVAWrapper(BaseLVLMWrapper):
                     source_tau_values=cfg_dgst_t.get("source_tau_values"),
                     transport_top_k_values=cfg_dgst_t.get(
                         "transport_top_k_values"
+                    ),
+                    spatial_cost_semantic_weight=float(
+                        cfg_dgst_t.get("spatial_cost_semantic_weight", 1.0)
+                    ),
+                    spatial_cost_distance_weight=float(
+                        cfg_dgst_t.get("spatial_cost_distance_weight", 1.0)
                     ),
                     compute_capped_topmass_085=bool(
                         cfg_dgst_t.get("compute_capped_topmass_085", False)
@@ -565,6 +577,61 @@ class LLaVAWrapper(BaseLVLMWrapper):
             "visual_end": int(img_end),
             "attention_requirement": requirements.attention.value,
         }
+        if requirements.instruction_hidden_states:
+            instruction_positions = [
+                position
+                for position in full_prompt_positions
+                if position >= int(img_end)
+            ]
+            if len(instruction_positions) < 4:
+                raise RuntimeError(
+                    "Instruction Lens requires at least four post-visual prompt tokens"
+                )
+            if captures is not None:
+                instruction_states = positions_hidden_states_from_captures(
+                    captures,
+                    positions=instruction_positions,
+                )
+            elif layer_outputs is not None:
+                instruction_states = positions_hidden_states_from_layer_outputs(
+                    layer_outputs,
+                    positions=instruction_positions,
+                )
+            elif out.hidden_states is not None:
+                instruction_states = torch.stack(
+                    [state[0, instruction_positions, :] for state in out.hidden_states[1:]],
+                    dim=0,
+                )
+            else:
+                raise RuntimeError(
+                    "Instruction Lens requested but instruction states were not captured"
+                )
+            shared_baseline_capture.update(
+                {
+                    "instruct_lens_instruction_hidden_states": instruction_states.cpu(),
+                    # Official hidden-state indices (24, 22, 32) include the
+                    # embedding state. Our post-block stack omits it.
+                    "instruct_lens_visual_layer": 23,
+                    "instruct_lens_instruction_layer": 21,
+                    "instruct_lens_object_layer": 32,
+                }
+            )
+        instruct_lens_object_states: dict[int, torch.Tensor] = {}
+        if requirements.instruction_hidden_states:
+            object_start = min(int(value) for value in prediction_positions)
+            object_end = max(int(value) for value in prediction_positions) + 1
+            final_object_slice = final_normalized_hidden_slice(
+                model=self.model,
+                out=out,
+                dgst_captures=captures,
+                layer_outputs=layer_outputs,
+                start=object_start,
+                end=object_end,
+            ).cpu()
+            instruct_lens_object_states = {
+                int(position): final_object_slice[int(position) - object_start]
+                for position in prediction_positions
+            }
         if requirements.response_hidden_states:
             response_start = expanded_seq_len - len(response_ids)
             shared_response_hidden = final_normalized_hidden_slice(
@@ -622,6 +689,9 @@ class LLaVAWrapper(BaseLVLMWrapper):
                 captures=captures,
                 visual_start=img_start,
                 visual_end=img_end,
+                visual_grid=self._visual_grid_for_output(
+                    full_inputs, img_start, img_end
+                ),
                 image_token_id=image_token_id,
                 target_token_ids=targets,
                 prediction_positions=prediction_positions,
@@ -681,6 +751,12 @@ class LLaVAWrapper(BaseLVLMWrapper):
                 ),
                 four_gate_transport_top_k_values=cfg_dgst_t.get(
                     "transport_top_k_values"
+                ),
+                four_gate_spatial_cost_semantic_weight=float(
+                    cfg_dgst_t.get("spatial_cost_semantic_weight", 1.0)
+                ),
+                four_gate_spatial_cost_distance_weight=float(
+                    cfg_dgst_t.get("spatial_cost_distance_weight", 1.0)
                 ),
                 compute_prompt_cafe=bool(
                     cfg_dgst_t.get("compute_prompt_cafe", False)
@@ -748,6 +824,9 @@ class LLaVAWrapper(BaseLVLMWrapper):
             logits = position_logits[offset]
             pred_token_id = position_pred_ids[offset]
             pred_token_str = self.tokenizer.decode([pred_token_id], skip_special_tokens=False)
+            instruct_lens_object_hidden_state = instruct_lens_object_states.get(
+                int(prediction_position)
+            )
             outputs.append(
                 ModelOutput(
                     token_id=pred_token_id,
@@ -769,6 +848,13 @@ class LLaVAWrapper(BaseLVLMWrapper):
                     baseline_capture={
                         **shared_baseline_capture,
                         "prediction_position": int(prediction_position),
+                        **(
+                            {
+                                "instruct_lens_object_hidden_state": instruct_lens_object_hidden_state
+                            }
+                            if instruct_lens_object_hidden_state is not None
+                            else {}
+                        ),
                     },
                 )
             )

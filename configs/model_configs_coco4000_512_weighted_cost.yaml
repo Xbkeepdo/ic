@@ -1,0 +1,34 @@
+extends: model_configs_unified.yaml
+
+# Same COCO4000-512 generations and image split as the ICLR fusion experiment.
+# The source marginal is overridden by the pam/cam child configs when needed.
+run:
+  extraction_mode: method_only
+
+feature_extraction:
+  ads_cgc:
+    enabled: false
+  baseline:
+    enabled: false
+  dgst_t:
+    source_distribution_mode: softmax
+    cost_mode: linear_matched_state_target_w02
+    cost_modes:
+      - linear_matched_state_target_w02
+      - linear_matched_state_target_w04
+      - linear_matched_state_target_w06
+      - linear_matched_state_target_w08
+
+training:
+  baseline:
+    methods: []
+  feature_sets:
+    method:
+      - hpre_raw_logit_gauss_risk_linear_matched_state_target_w02
+      - hpre_raw_logit_gauss_risk_linear_matched_state_target_w04
+      - hpre_raw_logit_gauss_risk_linear_matched_state_target_w06
+      - hpre_raw_logit_gauss_risk_linear_matched_state_target_w08
+      - hpre_softmax_prob_gauss_risk_linear_matched_state_target_w02
+      - hpre_softmax_prob_gauss_risk_linear_matched_state_target_w04
+      - hpre_softmax_prob_gauss_risk_linear_matched_state_target_w06
+      - hpre_softmax_prob_gauss_risk_linear_matched_state_target_w08

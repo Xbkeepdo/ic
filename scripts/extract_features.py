@@ -1350,6 +1350,21 @@ def _controlled_baseline_feature_config(
                 cfg.get("clip_model", "openai/clip-vit-base-patch32")
             ),
         }
+    if "token_grounding" in methods:
+        cfg = dict(baseline_cfg.get("token_grounding") or {})
+        result["token_grounding"] = {
+            "ads": dict(cfg.get("ads") or {}),
+            "cgc": dict(cfg.get("cgc") or {}),
+        }
+    if "instruct_lens" in methods:
+        cfg = dict(baseline_cfg.get("instruct_lens") or {})
+        result["instruct_lens"] = {
+            "k": int(cfg.get("k", 16)),
+            "m": int(cfg.get("m", 4)),
+            "tau": float(cfg.get("tau", 10.0)),
+            "alpha": float(cfg.get("alpha", 2.0)),
+            "w": float(cfg.get("w", 0.4)),
+        }
     return result
 
 
@@ -1375,7 +1390,13 @@ def _baseline_methods_for_protocol(
     normalized = [
         str(value).strip().lower().replace("-", "_") for value in values
     ]
-    aliases = {"project_away": "projectaway", "meta_token": "metatoken"}
+    aliases = {
+        "project_away": "projectaway",
+        "meta_token": "metatoken",
+        "tokengrounding": "token_grounding",
+        "instruction_lens": "instruct_lens",
+        "inslen": "instruct_lens",
+    }
     normalized = [aliases.get(value, value) for value in normalized]
     if "all" in normalized:
         normalized = [
@@ -1384,6 +1405,8 @@ def _baseline_methods_for_protocol(
             "metatoken",
             "projectaway",
             "svar",
+            "token_grounding",
+            "instruct_lens",
         ]
     normalized = sorted(dict.fromkeys(normalized))
     svar_cfg = baseline_cfg.get("svar") or {}
