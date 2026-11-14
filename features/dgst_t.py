@@ -393,6 +393,24 @@ def compute_dgst_t_batch_from_captures(
     if not target_ids:
         return []
 
+    target_mode = str(target_gate_mode).strip().lower().replace("-", "_")
+    if target_mode == "logs_risk_f_log":
+        from features.logs_risk_f_log import compute_logs_risk_f_log_batch
+
+        return compute_logs_risk_f_log_batch(
+            model=model,
+            captures=captures,
+            visual_start=int(visual_start),
+            visual_end=int(visual_end),
+            target_token_ids=target_ids,
+            prediction_positions=pred_positions,
+            tau=float(tau),
+            transport_top_k=int(transport_top_k),
+            semantic_chunk_size=int(semantic_chunk_size),
+            ot_solver=str(ot_solver),
+            release_layer_captures=bool(release_layer_captures),
+        )
+
     if _normalize_target_gate_mode(target_gate_mode) == "four_gate":
         prompt_positions = (
             [int(position) for position in prompt_positions_override]

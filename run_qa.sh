@@ -17,13 +17,23 @@ CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-0,1}"
 DEVICE="${DEVICE:-cuda:0}"
 GENERATION_DEVICES="${GENERATION_DEVICES:-cuda:0 cuda:1}"
 FEATURE_DEVICES="${FEATURE_DEVICES:-cuda:0 cuda:1}"
+FEATURE_SYNC_EVERY="${FEATURE_SYNC_EVERY:-${FEATURE_SHARD_SIZE:-32}}"
 BASELINE_LABEL_PROTOCOLS="${BASELINE_LABEL_PROTOCOLS:-}"
+POSITION_PROTOCOLS="${POSITION_PROTOCOLS:-}"
+BASELINE_CPU_THREADS="${BASELINE_CPU_THREADS:-8}"
 export CUDA_VISIBLE_DEVICES
 # Required by PyTorch deterministic CUDA matrix multiplication on CUDA >= 10.2.
 # Keep this set before any Python process imports torch.
 export CUBLAS_WORKSPACE_CONFIG="${CUBLAS_WORKSPACE_CONFIG:-:4096:8}"
 if [[ -z "$BASELINE_LABEL_PROTOCOLS" ]]; then
     BASELINE_LABEL_PROTOCOLS="$("$PYTHON_BIN" -c 'import sys,yaml; c=yaml.safe_load(open(sys.argv[1])); print(" ".join(c.get("qa_benchmarks",{}).get("baseline_label_protocols",["object_hallucination_yes_only"])))' "$CONFIG")"
+fi
+if [[ -z "$POSITION_PROTOCOLS" ]]; then
+    POSITION_PROTOCOLS="$("$PYTHON_BIN" -c 'import sys,yaml; c=yaml.safe_load(open(sys.argv[1])); print(" ".join(c.get("qa_benchmarks",{}).get("position_protocols",["prompt_last_token"])))' "$CONFIG")"
+fi
+if ! [[ "$BASELINE_CPU_THREADS" =~ ^[1-9][0-9]*$ ]]; then
+    echo "BASELINE_CPU_THREADS must be a positive integer" >&2
+    exit 2
 fi
 
 # Step 1: Prepare one immutable outer image-level 8:2 question split.
@@ -50,6 +60,7 @@ fi
     --device "$DEVICE" \
     --generation-devices $GENERATION_DEVICES \
     --feature-devices $FEATURE_DEVICES \
+    --feature-sync-every "$FEATURE_SYNC_EVERY" \
     --baseline-label-protocols $BASELINE_LABEL_PROTOCOLS \
     --stage all \
     --resume
@@ -64,13 +75,20 @@ fi
 
 # Step 4: Train the baseline features already produced by the shared forward.
 for protocol in $BASELINE_LABEL_PROTOCOLS; do
-    "$PYTHON_BIN" scripts/train_qa_baselines.py \
-        --model "$MODEL" \
-        --output "$OUTPUT" \
-        --dataset "$DATASET" \
-        --config "$CONFIG" \
-        --device "$DEVICE" \
-        --label-protocol "$protocol"
+    for position in $POSITION_PROTOCOLS; do
+        OMP_NUM_THREADS="$BASELINE_CPU_THREADS" \
+        MKL_NUM_THREADS="$BASELINE_CPU_THREADS" \
+        OPENBLAS_NUM_THREADS="$BASELINE_CPU_THREADS" \
+        NUMEXPR_NUM_THREADS="$BASELINE_CPU_THREADS" \
+        "$PYTHON_BIN" scripts/train_qa_baselines.py \
+            --model "$MODEL" \
+            --output "$OUTPUT" \
+            --dataset "$DATASET" \
+            --config "$CONFIG" \
+            --device "$DEVICE" \
+            --label-protocol "$protocol" \
+            --position "$position"
+    done
 done
 
 # Step 5: Write one comparison table for each trained label protocol.

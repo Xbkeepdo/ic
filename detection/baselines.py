@@ -9,7 +9,7 @@ from typing import Any, Mapping, Optional, Sequence
 
 import numpy as np
 import torch
-from sklearn.ensemble import GradientBoostingClassifier
+from sklearn.ensemble import GradientBoostingClassifier, RandomForestClassifier
 from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import (
     accuracy_score,
@@ -23,6 +23,7 @@ from sklearn.metrics import (
 )
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler
+from sklearn.neural_network import MLPClassifier
 from torch import nn
 from torch.utils.data import DataLoader, TensorDataset, WeightedRandomSampler
 
@@ -115,7 +116,12 @@ def split_records_by_image(
     }
 
 
-def build_metatoken_classifier(kind: str, *, seed: int = 42):
+def build_metatoken_classifier(
+    kind: str,
+    *,
+    seed: int = 42,
+    standardize: bool = True,
+):
     """Build the two MetaToken classifiers specified by the comparison paper."""
 
     normalized = str(kind).strip().lower()
@@ -129,8 +135,71 @@ def build_metatoken_classifier(kind: str, *, seed: int = 42):
         )
     else:
         raise ValueError("MetaToken classifier must be 'lr' or 'gb'")
-    # MetaToken standardizes all input features before meta classification.
-    return Pipeline((("standardize", StandardScaler()), ("classifier", classifier)))
+    steps = []
+    if standardize:
+        # MetaToken's default protocol standardizes all input features before
+        # meta classification.  Keep it opt-out so ablations can isolate this
+        # preprocessing choice without changing classifier hyperparameters.
+        steps.append(("standardize", StandardScaler()))
+    steps.append(("classifier", classifier))
+    return Pipeline(steps)
+
+
+def build_token_grounding_classifier(
+    kind: str,
+    params: Mapping[str, Any],
+    *,
+    seed: int = 42,
+):
+    """Build one classifier from the TokenGrounding repository grid.
+
+    The released TokenGrounding training code evaluates XGBoost, Random
+    Forest, and sklearn MLP classifiers separately. Keep those estimator
+    families and their sklearn defaults here; only the parameters exposed by
+    the released YAML grid are overridden.
+    """
+
+    normalized = str(kind).strip().lower()
+    values = dict(params)
+    if normalized == "xgb":
+        try:
+            from xgboost import XGBClassifier
+        except ImportError as error:  # pragma: no cover - environment guard
+            raise RuntimeError(
+                "TokenGrounding-XGB requires the xgboost package"
+            ) from error
+        return XGBClassifier(
+            max_depth=int(values.get("max_depth", 6)),
+            learning_rate=float(values.get("learning_rate", 0.05)),
+            n_estimators=int(values.get("n_estimators", 500)),
+            eval_metric="logloss",
+            random_state=int(seed),
+            n_jobs=-1,
+        )
+    if normalized == "rf":
+        max_depth = values.get("max_depth", 10)
+        return RandomForestClassifier(
+            max_depth=None if max_depth is None else int(max_depth),
+            n_estimators=int(values.get("n_estimators", 400)),
+            random_state=int(seed),
+            n_jobs=-1,
+        )
+    if normalized == "mlp":
+        hidden = values.get("hidden_layer_sizes", [128])
+        if isinstance(hidden, (int, np.integer)):
+            hidden_sizes = (int(hidden),)
+        else:
+            hidden_sizes = tuple(int(value) for value in hidden)
+        return MLPClassifier(
+            hidden_layer_sizes=hidden_sizes,
+            learning_rate_init=float(values.get("learning_rate_init", 1e-3)),
+            solver=str(values.get("solver", "adam")),
+            max_iter=int(values.get("max_iter", 500)),
+            random_state=int(seed),
+        )
+    raise ValueError(
+        "TokenGrounding classifier must be 'xgb', 'rf', or 'mlp'"
+    )
 
 
 class SVARMLP(nn.Module):

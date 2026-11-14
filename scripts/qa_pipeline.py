@@ -37,6 +37,7 @@ from features.qa_baseline import (
     QA_LABEL_PROTOCOLS,
     QABaselineAdapter,
     QABaselineFeatureStore,
+    baseline_record_for_position,
     build_qa_probe_split_manifest,
     normalize_qa_label_protocol,
     qa_label_for_protocol,
@@ -121,7 +122,17 @@ def parse_args():
         help="Extract disjoint question shards in parallel, e.g. cuda:0 cuda:1.",
     )
     parser.add_argument("--checkpoint-every", type=int, default=10)
-    parser.add_argument("--feature-shard-size", type=int, default=25)
+    parser.add_argument(
+        "--feature-sync-every",
+        "--feature-shard-size",
+        dest="feature_sync_every",
+        type=int,
+        default=32,
+        help=(
+            "fsync interval for each per-card append-only pkl; "
+            "--feature-shard-size is retained as a compatibility alias"
+        ),
+    )
     parser.add_argument(
         "--baseline-label-protocols",
         nargs="+",
@@ -131,6 +142,18 @@ def parse_args():
     )
     parser.add_argument("--resume", dest="resume", action="store_true", default=True)
     parser.add_argument("--no-resume", dest="resume", action="store_false")
+    parser.add_argument(
+        "--num-shards",
+        type=int,
+        default=1,
+        help="Total number of independent cross-process feature shards.",
+    )
+    parser.add_argument(
+        "--shard-index",
+        type=int,
+        default=0,
+        help="Zero-based shard owned by this process.",
+    )
     return parser.parse_args()
 
 
@@ -188,6 +211,7 @@ def _feature_worker(
     ads_cgc_enabled: bool,
     baseline_specs: list[dict],
     worker_id: int,
+    validate_fingerprints: bool,
 ) -> None:
     wrapper = build_model(model_key, model_cfg, device=device)
     with ExitStack() as stack:
@@ -214,6 +238,7 @@ def _feature_worker(
             method_enabled=method_enabled,
             ads_cgc_enabled=ads_cgc_enabled,
             baseline_consumers=consumers,
+            validate_fingerprints=validate_fingerprints,
         )
 
 
@@ -239,6 +264,7 @@ def _open_baseline_consumers(
             part_prefix=(
                 f"part-worker{int(worker_id):03d}" if parallel else "part"
             ),
+            isolated_resume=parallel,
         )
         runtime = stack.enter_context(
             BaselineRuntime(
@@ -247,6 +273,7 @@ def _open_baseline_consumers(
                 baseline_dir=spec["baseline_dir"],
                 config=spec["baseline_cfg"],
                 device=device,
+                inline_dhcp=True,
                 worker_id=worker_id,
                 parallel=parallel,
                 resume=True,
@@ -410,6 +437,7 @@ def _run_parallel_extraction(
     method_enabled: bool,
     ads_cgc_enabled: bool,
     baseline_specs: list[dict],
+    validate_fingerprints: bool,
 ) -> list[dict]:
     root_enabled = bool(method_enabled or ads_cgc_enabled)
     partitions = _question_partitions(questions, len(devices))
@@ -451,6 +479,7 @@ def _run_parallel_extraction(
                 "ads_cgc_enabled": ads_cgc_enabled,
                 "baseline_specs": baseline_specs,
                 "worker_id": worker_id,
+                "validate_fingerprints": validate_fingerprints,
             }
         )
     print(
@@ -565,18 +594,25 @@ def _prepare_baseline_specs(
             )
         selected_keys = tuple(str(row["key"]) for row in selected_questions)
         baseline_dir = run_dir / "baseline" / protocol
-        expected_manifest = _expected_baseline_manifest(
-            model=model,
-            dataset=dataset,
-            label_protocol=protocol,
-            model_cfg=model_cfg,
-            baseline_cfg=baseline_cfg,
-            methods=methods,
-            questions_path=questions_path,
-            generations_path=generations_path,
-            labels_path=labels_path,
-            selected_keys=selected_keys,
-        )
+        expected_manifest = {}
+        if validate_manifests:
+            expected_manifest = _expected_baseline_manifest(
+                model=model,
+                dataset=dataset,
+                label_protocol=protocol,
+                model_cfg=model_cfg,
+                baseline_cfg=baseline_cfg,
+                methods=methods,
+                questions_path=questions_path,
+                generations_path=generations_path,
+                labels_path=labels_path,
+                selected_keys=selected_keys,
+            )
+            expected_manifest["position_protocols"] = list(
+                (config.get("qa_benchmarks") or {}).get(
+                    "position_protocols", ["prompt_last_token"]
+                )
+            )
         baseline_dir.mkdir(parents=True, exist_ok=True)
         spec = {
             "label_protocol": protocol,
@@ -585,6 +621,17 @@ def _prepare_baseline_specs(
             "methods": tuple(methods),
             "selected_keys": selected_keys,
             "cache_ids": validate_qa_cache_ids(selected_questions),
+            "required_object_keys": {
+                str(row["key"])
+                for row in selected_questions
+                if "question_object_pre_token"
+                in tuple(
+                    (config.get("qa_benchmarks") or {}).get(
+                        "position_protocols", ["prompt_last_token"]
+                    )
+                )
+                and str(row.get("object_span_status") or "") == "found"
+            },
             "expected_manifest": expected_manifest,
             "validate_manifests": bool(validate_manifests),
         }
@@ -599,7 +646,7 @@ def _prepare_baseline_specs(
         if (
             resume
             and (baseline_dir / "features.pkl").exists()
-            and not any((baseline_dir / "feature_parts").glob("part-*.pkl"))
+            and not any((baseline_dir / "feature_parts").glob("part*.pkl"))
         ):
             raise RuntimeError(
                 "Cannot safely resume QA baseline extraction from features.pkl "
@@ -627,6 +674,21 @@ def _baseline_spec_complete(spec: dict) -> bool:
                 return False
             for record in records:
                 validate_baseline_record(record, required=spec["methods"])
+                prompt_record = baseline_record_for_position(
+                    record, "prompt_last_token"
+                )
+                if prompt_record is None:
+                    return False
+                validate_baseline_record(prompt_record, required=spec["methods"])
+                if str(record.get("key")) in spec["required_object_keys"]:
+                    object_record = baseline_record_for_position(
+                        record, "question_object_pre_token"
+                    )
+                    if object_record is None:
+                        return False
+                    validate_baseline_record(
+                        object_record, required=spec["methods"]
+                    )
             with split_path.open(encoding="utf-8") as handle:
                 stored_split = json.load(handle)
             return stored_split == build_qa_probe_split_manifest(
@@ -642,12 +704,30 @@ def _baseline_spec_complete(spec: dict) -> bool:
         for key, value in spec["expected_manifest"].items():
             if key != "status" and manifest.get(key) != value:
                 return False
-        return (
+        manifest_matches = (
             manifest.get("features_sha256") == sha256_file(feature_path)
             and manifest.get("probe_splits_sha256") == sha256_file(split_path)
             and int(manifest.get("num_records", -1))
             == len(spec["selected_keys"])
         )
+        if not manifest_matches:
+            return False
+        with feature_path.open("rb") as handle:
+            records = pickle.load(handle)
+        if not isinstance(records, list):
+            return False
+        for record in records:
+            if baseline_record_for_position(record, "prompt_last_token") is None:
+                return False
+            if (
+                str(record.get("key")) in spec["required_object_keys"]
+                and baseline_record_for_position(
+                    record, "question_object_pre_token"
+                )
+                is None
+            ):
+                return False
+        return True
     except (OSError, TypeError, ValueError, json.JSONDecodeError):
         return False
 
@@ -671,6 +751,22 @@ def _finalize_baseline_spec(spec: dict, shard_size: int) -> None:
         )
     for record in records:
         validate_baseline_record(record, required=spec["methods"])
+        prompt_record = baseline_record_for_position(record, "prompt_last_token")
+        if prompt_record is None:
+            raise RuntimeError(
+                f"QA baseline record {record.get('key')!r} lacks prompt_last_token"
+            )
+        validate_baseline_record(prompt_record, required=spec["methods"])
+        if str(record.get("key")) in spec["required_object_keys"]:
+            object_record = baseline_record_for_position(
+                record, "question_object_pre_token"
+            )
+            if object_record is None:
+                raise RuntimeError(
+                    f"QA baseline record {record.get('key')!r} lacks "
+                    "question_object_pre_token"
+                )
+            validate_baseline_record(object_record, required=spec["methods"])
     validate_halloc_cache_uniqueness(records)
     _validate_halloc_cache_files(records, baseline_dir)
     split_manifest = build_qa_probe_split_manifest(
@@ -679,17 +775,36 @@ def _finalize_baseline_spec(spec: dict, shard_size: int) -> None:
     )
     split_path = baseline_dir / QA_BASELINE_SPLIT_MANIFEST_NAME
     atomic_write_json(split_path, split_manifest)
+    for position in ("prompt_last_token", "question_object_pre_token"):
+        position_records = [
+            value
+            for record in records
+            if (value := baseline_record_for_position(record, position))
+            is not None
+        ]
+        if position_records:
+            atomic_write_json(
+                baseline_dir / f"probe_splits.{position}.json",
+                build_qa_probe_split_manifest(
+                    position_records,
+                    label_protocol=spec["label_protocol"],
+                ),
+            )
     completed = {
         **spec["expected_manifest"],
         "status": "complete",
         "num_records": len(records),
-        "features_sha256": sha256_file(feature_path),
-        "probe_splits_sha256": sha256_file(split_path),
         "question_counts": split_manifest["question_counts"],
         "image_counts": split_manifest["image_counts"],
         "shared_forward": True,
     }
     if bool(spec.get("validate_manifests", True)):
+        completed.update(
+            {
+                "features_sha256": sha256_file(feature_path),
+                "probe_splits_sha256": sha256_file(split_path),
+            }
+        )
         atomic_write_json(
             baseline_dir / QA_BASELINE_MANIFEST_NAME,
             completed,
@@ -873,6 +988,13 @@ def _qa_model_cfg(
 
 def main():
     args = parse_args()
+    if args.num_shards <= 0:
+        raise ValueError("--num-shards must be positive")
+    if not 0 <= args.shard_index < args.num_shards:
+        raise ValueError("--shard-index must be in [0, --num-shards)")
+    distributed_shard = args.num_shards > 1
+    if distributed_shard and args.stage != "extract":
+        raise ValueError("Distributed shards require --stage extract")
     generation_devices = _normalize_devices(args.generation_devices, args.device)
     feature_devices = _normalize_devices(args.feature_devices, args.device)
     config = load_config(args.config)
@@ -912,16 +1034,20 @@ def main():
     dgst_cfg = config["feature_extraction"]["dgst_t"]
     ads_cfg = get_ads_cfg(config)
     cgc_cfg = get_cgc_cfg(config)
-    extraction_fingerprint = _qa_extraction_config_fingerprint(
-        config=config,
-        model_key=args.model,
-        model_cfg=model_cfg,
-        dgst_cfg=dgst_cfg,
-        ads_cfg=ads_cfg,
-        cgc_cfg=cgc_cfg,
-        position_protocols=position_protocols,
-        method_enabled=method_enabled,
-        ads_cgc_enabled=ads_cgc_enabled,
+    extraction_fingerprint = (
+        _qa_extraction_config_fingerprint(
+            config=config,
+            model_key=args.model,
+            model_cfg=model_cfg,
+            dgst_cfg=dgst_cfg,
+            ads_cfg=ads_cfg,
+            cgc_cfg=cgc_cfg,
+            position_protocols=position_protocols,
+            method_enabled=method_enabled,
+            ads_cgc_enabled=ads_cgc_enabled,
+        )
+        if validate_manifests
+        else "content-hashing-disabled"
     )
     prepared_root = args.prepared_root or qa_cfg.get("prepared_root")
     output_root = args.output_root or qa_cfg.get("output_root")
@@ -935,6 +1061,8 @@ def main():
     questions = load_jsonl(questions_path)
     if args.limit is not None:
         questions = questions[: args.limit]
+    if distributed_shard:
+        questions = questions[args.shard_index :: args.num_shards]
     output_dir = str(qa_paths.benchmark_dir)
     generations_path = qa_paths.generations_path
     generation_failures_path = qa_paths.generation_failures_path
@@ -1002,6 +1130,7 @@ def main():
             extraction_fingerprint,
             method_enabled=method_enabled,
             ads_cgc_enabled=ads_cgc_enabled,
+            validate_fingerprints=validate_manifests,
         )
     )
     wrapper = None
@@ -1106,6 +1235,7 @@ def main():
                 extraction_fingerprint,
                 method_enabled=method_enabled,
                 ads_cgc_enabled=ads_cgc_enabled,
+                validate_fingerprints=validate_manifests,
             )
         )
         baseline_specs = (
@@ -1129,6 +1259,53 @@ def main():
         pending_baseline_specs = [
             spec for spec in baseline_specs if not _baseline_spec_complete(spec)
         ]
+        if distributed_shard:
+            shard_prefix = f"part-worker{int(args.shard_index):03d}"
+            print(
+                "[qa_pipeline] Distributed feature shard "
+                f"{args.shard_index}/{args.num_shards}: "
+                f"{len(questions)} assigned questions."
+            )
+            with ExitStack() as stack:
+                consumers = _open_baseline_consumers(
+                    stack=stack,
+                    wrapper=get_single_wrapper(feature_devices[0]),
+                    baseline_specs=pending_baseline_specs,
+                    device=feature_devices[0],
+                    shard_size=args.feature_sync_every,
+                    worker_id=args.shard_index,
+                    parallel=True,
+                )
+                extract_questions(
+                    get_single_wrapper(feature_devices[0]),
+                    args.model,
+                    questions,
+                    output_dir,
+                    dgst_cfg,
+                    ads_cfg,
+                    cgc_cfg,
+                    args.feature_sync_every,
+                    position_protocols=position_protocols,
+                    extraction_fingerprint=extraction_fingerprint,
+                    method_enabled=method_enabled,
+                    ads_cgc_enabled=ads_cgc_enabled,
+                    baseline_consumers=consumers,
+                    generations_path=generations_path,
+                    validate_fingerprints=validate_manifests,
+                    feature_part_prefix=shard_prefix,
+                    isolated_resume=True,
+                    failures_path=(
+                        Path(output_dir)
+                        / f"extraction_failures.worker{args.shard_index:03d}.jsonl"
+                    ),
+                    consolidate=False,
+                )
+            release_single_wrapper()
+            print(
+                "[qa_pipeline] Complete distributed feature shard: "
+                f"{args.shard_index}/{args.num_shards}"
+            )
+            return
         if feature_complete and not pending_baseline_specs:
             print(
                 "[qa_pipeline] Resume: all selected QA feature families are "
@@ -1150,12 +1327,13 @@ def main():
                 dgst_cfg=dgst_cfg,
                 ads_cfg=ads_cfg,
                 cgc_cfg=cgc_cfg,
-                shard_size=args.feature_shard_size,
+                shard_size=args.feature_sync_every,
                 position_protocols=position_protocols,
                 extraction_fingerprint=extraction_fingerprint,
                 method_enabled=bool(method_enabled and not feature_complete),
                 ads_cgc_enabled=bool(ads_cgc_enabled and not feature_complete),
                 baseline_specs=pending_baseline_specs,
+                validate_fingerprints=validate_manifests,
             )
             if feature_complete and root_enabled:
                 with open(os.path.join(output_dir, "features.pkl"), "rb") as handle:
@@ -1167,7 +1345,7 @@ def main():
                     wrapper=get_single_wrapper(feature_devices[0]),
                     baseline_specs=pending_baseline_specs,
                     device=feature_devices[0],
-                    shard_size=args.feature_shard_size,
+                    shard_size=args.feature_sync_every,
                     worker_id=0,
                     parallel=False,
                 )
@@ -1179,19 +1357,20 @@ def main():
                     dgst_cfg,
                     ads_cfg,
                     cgc_cfg,
-                    args.feature_shard_size,
+                    args.feature_sync_every,
                     position_protocols=position_protocols,
                     extraction_fingerprint=extraction_fingerprint,
                     method_enabled=bool(method_enabled and not feature_complete),
                     ads_cgc_enabled=bool(ads_cgc_enabled and not feature_complete),
                     baseline_consumers=consumers,
                     generations_path=generations_path,
+                    validate_fingerprints=validate_manifests,
                 )
             if feature_complete and root_enabled:
                 with open(os.path.join(output_dir, "features.pkl"), "rb") as handle:
                     features = pickle.load(handle)
         for spec in pending_baseline_specs:
-            _finalize_baseline_spec(spec, args.feature_shard_size)
+            _finalize_baseline_spec(spec, args.feature_sync_every)
         if root_enabled and not _feature_keys_complete(
             os.path.join(output_dir, "features.pkl"),
             expected_keys,
@@ -1203,6 +1382,7 @@ def main():
             extraction_fingerprint,
             method_enabled=method_enabled,
             ads_cgc_enabled=ads_cgc_enabled,
+            validate_fingerprints=validate_manifests,
         ):
             raise RuntimeError(
                 "QA root feature extraction is incomplete; inspect "
@@ -1283,6 +1463,7 @@ def _feature_keys_complete(
     *,
     method_enabled: bool = True,
     ads_cgc_enabled: bool = True,
+    validate_fingerprints: bool = True,
 ) -> bool:
     if not os.path.exists(path):
         return False
@@ -1306,12 +1487,22 @@ def _feature_keys_complete(
         question = question_map[key]
         if generation is None or label_row is None:
             return False
-        expected_fingerprint = qa_generation_fingerprint(
-            generation, qa_prompt(model_key, question["question"])
+        expected_fingerprint = (
+            qa_generation_fingerprint(
+                generation, qa_prompt(model_key, question["question"])
+            )
+            if validate_fingerprints
+            else None
         )
-        expected_label_fingerprint = qa_label_fingerprint(label_row)
-        expected_question_fingerprint = qa_question_input_fingerprint(
-            question, qa_prompt(model_key, question["question"])
+        expected_label_fingerprint = (
+            qa_label_fingerprint(label_row) if validate_fingerprints else None
+        )
+        expected_question_fingerprint = (
+            qa_question_input_fingerprint(
+                question, qa_prompt(model_key, question["question"])
+            )
+            if validate_fingerprints
+            else None
         )
         selected_row = selected[key]
         selected_positions = selected_row.get("positions")
@@ -1336,14 +1527,26 @@ def _feature_keys_complete(
         if (
             selected_row.get("feature_schema_version")
             != QA_FEATURE_SCHEMA_VERSION
-            or selected_row.get("generation_fingerprint")
-            != expected_fingerprint
-            or selected_row.get("label_fingerprint")
-            != expected_label_fingerprint
-            or selected_row.get("question_input_fingerprint")
-            != expected_question_fingerprint
-            or selected_row.get("extraction_fingerprint")
-            != extraction_fingerprint
+            or (
+                validate_fingerprints
+                and selected_row.get("generation_fingerprint")
+                != expected_fingerprint
+            )
+            or (
+                validate_fingerprints
+                and selected_row.get("label_fingerprint")
+                != expected_label_fingerprint
+            )
+            or (
+                validate_fingerprints
+                and selected_row.get("question_input_fingerprint")
+                != expected_question_fingerprint
+            )
+            or (
+                validate_fingerprints
+                and selected_row.get("extraction_fingerprint")
+                != extraction_fingerprint
+            )
             or tuple(selected_row.get("position_protocols") or ())
             != tuple(position_protocols)
             or not isinstance(selected_positions, dict)

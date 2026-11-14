@@ -22,9 +22,10 @@ from models.base_wrapper import ModelOutput
 
 from .baseline.runtime import BaselineRuntime, normalize_baseline_methods
 from .baseline.schema import get_baseline_payload, validate_baseline_record
+from .pickle_journal import AppendPickleJournal, iter_pickle_records
 
 
-QA_BASELINE_PROTOCOL = "qa_prompt_last_token_image_level_probe_split_v3"
+QA_BASELINE_PROTOCOL = "qa_positioned_token_image_level_probe_split_v4"
 QA_CACHE_ID_SCHEME = "sha256(question_key)-63bit-v1"
 QA_LABEL_PROTOCOLS = (
     "answer_correctness_all",
@@ -43,6 +44,10 @@ DEFAULT_QA_BASELINES = (
     "halloc",
 )
 QA_SPLITS = ("train", "val", "test")
+QA_BASELINE_POSITIONS = (
+    "prompt_last_token",
+    "question_object_pre_token",
+)
 
 
 def normalize_qa_label_protocol(value: str) -> str:
@@ -230,6 +235,8 @@ class QABaselineAdapter:
         target_index: int,
         model_output: ModelOutput,
         cache_id: Optional[int] = None,
+        position_protocol: str = "prompt_last_token",
+        position_target_token_id: Optional[int] = None,
     ) -> dict[str, Any]:
         key = _matching_question_key(question, generation, label_row)
         label = qa_label_for_protocol(label_row, self.label_protocol)
@@ -244,23 +251,35 @@ class QABaselineAdapter:
         if str(label_row.get("probe_split") or probe_split) != probe_split:
             raise ValueError(f"Question/label probe_split mismatch for {key}")
 
-        response_ids = [int(value) for value in response_token_ids]
-        target_index = int(target_index)
-        if target_index != 0:
-            raise ValueError(
-                "Prompt-last QA baseline requires response target index 0, "
-                f"got {target_index}"
-            )
-        if not response_ids:
-            raise ValueError("Prompt-last QA baseline requires a response token")
-        if int(model_output.response_token_idx) != target_index:
-            raise ValueError(
-                "Wrapper output does not represent the requested prompt-last "
-                f"prediction position: {model_output.response_token_idx} != "
-                f"{target_index}"
-            )
+        position = str(position_protocol).strip()
+        if position not in QA_BASELINE_POSITIONS:
+            raise ValueError(f"Unknown QA baseline position: {position!r}")
+        if position == "prompt_last_token":
+            response_ids = [int(value) for value in response_token_ids]
+            target_index = int(target_index)
+            if target_index != 0:
+                raise ValueError(
+                    "Prompt-last QA baseline requires response target index 0, "
+                    f"got {target_index}"
+                )
+            if not response_ids:
+                raise ValueError("Prompt-last QA baseline requires a response token")
+            if int(model_output.response_token_idx) != target_index:
+                raise ValueError(
+                    "Wrapper output does not represent the requested prompt-last "
+                    f"prediction position: {model_output.response_token_idx} != "
+                    f"{target_index}"
+                )
+            word = str(model_output.token_str or "first_response_token")
+        else:
+            if position_target_token_id is None:
+                raise ValueError(
+                    "Object-token QA baseline requires the contextual target token ID"
+                )
+            response_ids = [int(position_target_token_id)]
+            target_index = 0
+            word = str(question.get("object_surface") or "question_object_token")
         synthetic_cache_id = int(cache_id if cache_id is not None else qa_cache_id(key))
-        word = str(model_output.token_str or "first_response_token")
         records = self.runtime.build_image_records(
             image=image,
             image_id=synthetic_cache_id,
@@ -290,19 +309,29 @@ class QABaselineAdapter:
                 "probe_split": probe_split,
                 "qa_image_identity": qa_image_identity(question),
                 "qa_label_protocol": self.label_protocol,
+                "baseline_position_protocol": position,
             }
         )
         metadata = record.setdefault("metadata", {})
         metadata["qa"] = {
             "protocol": QA_BASELINE_PROTOCOL,
-            "target": "first_generated_token_from_prompt_last_state",
+            "target": (
+                "first_generated_token_from_prompt_last_state"
+                if position == "prompt_last_token"
+                else "question_object_contextual_first_subtoken"
+            ),
+            "position_protocol": position,
             "question_key": key,
             "cache_id": synthetic_cache_id,
             "cache_id_scheme": QA_CACHE_ID_SCHEME,
             "image_identity": record["qa_image_identity"],
             "probe_split": probe_split,
             "prompt_last_response_target_index": target_index,
-            "semantic_answer_token_index": generation.get("answer_token_index"),
+            "semantic_answer_token_index": (
+                generation.get("answer_token_index")
+                if position == "prompt_last_token"
+                else None
+            ),
             "target_token_id": int(response_ids[target_index]),
             "predicted_token_id": int(model_output.token_id),
             "predicted_token": str(model_output.token_str),
@@ -314,9 +343,82 @@ class QABaselineAdapter:
         validate_baseline_record(record, required=self.runtime.methods)
         return record
 
+    def relabel_record(
+        self,
+        record: Mapping[str, Any],
+        *,
+        label_row: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        """Reuse label-independent payloads for another QA label protocol.
+
+        The six controlled QA baselines depend on the image, causal position,
+        and target token, not on the binary supervision label.  When the same
+        question belongs to both QA cohorts, computing those payloads twice is
+        therefore redundant.  HalLoc is excluded by the caller because its
+        payload references a protocol-local cache directory.
+        """
+
+        label = qa_label_for_protocol(label_row, self.label_protocol)
+        if label is None:
+            raise ValueError(
+                f"QA question {record.get('key')!r} is excluded by label "
+                f"protocol {self.label_protocol!r}"
+            )
+        value = deepcopy(dict(record))
+        value["label"] = int(label)
+        value["qa_label_protocol"] = self.label_protocol
+        qa_metadata = value.setdefault("metadata", {}).setdefault("qa", {})
+        qa_metadata["label_protocol"] = self.label_protocol
+        qa_metadata["label_field"] = QA_LABEL_FIELDS[self.label_protocol]
+        validate_baseline_record(value, required=self.runtime.methods)
+        return value
+
+
+def compose_positioned_baseline_record(
+    position_records: Mapping[str, Mapping[str, Any]],
+) -> dict[str, Any]:
+    """Store both causal positions in one question-level baseline record."""
+
+    normalized = {
+        str(position): deepcopy(dict(record))
+        for position, record in position_records.items()
+    }
+    unknown = sorted(set(normalized) - set(QA_BASELINE_POSITIONS))
+    if unknown:
+        raise ValueError(f"Unknown QA baseline positions: {unknown}")
+    if "prompt_last_token" not in normalized:
+        raise ValueError("Positioned QA baseline record requires prompt_last_token")
+    # Keep the legacy top-level prompt-last view without serializing its large
+    # inline DHCP tensor twice.  The shallow copy shares immutable payloads
+    # with positions.prompt_last_token, and pickle preserves that alias.
+    primary = dict(normalized["prompt_last_token"])
+    primary["positions"] = normalized
+    primary["baseline_position_protocols"] = [
+        position for position in QA_BASELINE_POSITIONS if position in normalized
+    ]
+    return primary
+
+
+def baseline_record_for_position(
+    record: Mapping[str, Any],
+    position: str,
+) -> Optional[dict[str, Any]]:
+    """Return one position, with prompt-last compatibility for old shards."""
+
+    normalized = str(position).strip()
+    if normalized not in QA_BASELINE_POSITIONS:
+        raise ValueError(f"Unknown QA baseline position: {position!r}")
+    positions = record.get("positions")
+    if isinstance(positions, Mapping):
+        value = positions.get(normalized)
+        return deepcopy(dict(value)) if isinstance(value, Mapping) else None
+    if normalized == "prompt_last_token":
+        return deepcopy(dict(record))
+    return None
+
 
 class QABaselineFeatureStore:
-    """Atomic, append-only question shards with deterministic consolidation."""
+    """One append-only journal per card with deterministic consolidation."""
 
     def __init__(
         self,
@@ -325,63 +427,67 @@ class QABaselineFeatureStore:
         shard_size: int = 25,
         resume: bool = True,
         part_prefix: str = "part",
+        isolated_resume: bool = False,
     ) -> None:
         self.baseline_dir = Path(baseline_dir)
         self.parts_dir = self.baseline_dir / "feature_parts"
         self.parts_dir.mkdir(parents=True, exist_ok=True)
-        self.shard_size = max(1, int(shard_size))
+        self.sync_every = max(1, int(shard_size))
         self.part_prefix = str(part_prefix).strip()
         if not self.part_prefix or any(
             character not in "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_"
             for character in self.part_prefix
         ):
             raise ValueError(f"Invalid QA baseline shard prefix: {part_prefix!r}")
-        existing_paths = sorted(self.parts_dir.glob("part-*.pkl"))
+        existing_paths = sorted(self.parts_dir.glob("part*.pkl"))
+        self.journal_path = self.parts_dir / f"{self.part_prefix}.pkl"
+        if isolated_resume:
+            stable_path = self.parts_dir / "part.pkl"
+            existing_paths = [
+                path
+                for path in existing_paths
+                if path == stable_path or path == self.journal_path
+            ]
         if existing_paths and not resume:
             raise FileExistsError(
                 f"QA baseline feature parts already exist: {self.parts_dir}"
             )
         self.rows: dict[str, dict[str, Any]] = {}
         for path in existing_paths:
-            with path.open("rb") as handle:
-                values = pickle.load(handle)
-            if not isinstance(values, list):
-                raise ValueError(f"QA baseline shard must contain a list: {path}")
-            for raw_record in values:
+            for raw_record in iter_pickle_records(
+                path,
+                repair_trailing_record=(path == self.journal_path),
+            ):
                 record = dict(raw_record)
                 key = str(record.get("key") or "")
                 if not key:
                     raise ValueError(f"QA baseline shard record has no key: {path}")
-                if key in self.rows:
-                    raise ValueError(f"Duplicate QA baseline feature key: {key}")
+                # Updated position-complete records are append-only.  A later
+                # shard supersedes an earlier prompt-only checkpoint.
                 self.rows[key] = record
-        self.pending: list[dict[str, Any]] = []
-        self.next_part = len(
-            list(self.parts_dir.glob(f"{self.part_prefix}-*.pkl"))
+        self.journal = AppendPickleJournal(
+            self.journal_path,
+            resume=resume,
+            sync_every=self.sync_every,
+            recover=False,
         )
 
-    def add(self, record: Mapping[str, Any]) -> bool:
+    def add(self, record: Mapping[str, Any], *, replace: bool = False) -> bool:
         key = str(record.get("key") or "").strip()
         if not key:
             raise ValueError("QA baseline feature record has no key")
-        if key in self.rows:
+        if key in self.rows and not replace:
             return False
         value = deepcopy(dict(record))
         self.rows[key] = value
-        self.pending.append(value)
-        if len(self.pending) >= self.shard_size:
-            self.flush()
+        self.journal.append(value)
         return True
 
     def flush(self) -> None:
-        if not self.pending:
-            return
-        path = self.parts_dir / (
-            f"{self.part_prefix}-{self.next_part:06d}.pkl"
-        )
-        _atomic_pickle(path, self.pending)
-        self.pending = []
-        self.next_part += 1
+        self.journal.flush()
+
+    def close(self) -> None:
+        self.journal.close()
 
     def consolidate(self) -> Path:
         self.flush()
@@ -511,6 +617,18 @@ def qa_baseline_feature_config(
         "dhcp": ("target_grid", "spatial_size", "shard_size"),
         "projectaway": ("vocab_chunk_size", "row_chunk_size"),
         "halloc": ("clip_model",),
+        "token_grounding": ("ads", "cgc"),
+        "instruct_lens": (
+            "k",
+            "m",
+            "tau",
+            "alpha",
+            "w",
+            "chunk_size",
+            "instruction_layer",
+            "visual_layer",
+            "object_layer",
+        ),
     }
     payload: dict[str, Any] = {"methods": list(selected)}
     for method in selected:

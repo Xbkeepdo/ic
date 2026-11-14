@@ -1,0 +1,11 @@
+# AMBER has attribute/relation/existence questions, but no reliable exact
+# object-character span for the object-pre-token protocol.  Keep prompt-last.
+extends: model_configs_qa_logs_k32_tau003.yaml
+
+qa_benchmarks:
+  # Also explicit for run_qa.sh's pre-Python argument construction.
+  baseline_label_protocols:
+    - "object_hallucination_yes_only"
+    - "answer_correctness_all"
+  position_protocols:
+    - "prompt_last_token"

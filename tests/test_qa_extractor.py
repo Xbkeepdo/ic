@@ -25,6 +25,43 @@ def test_find_first_answer_semantic_token():
     assert find_answer_semantic_token([4], TinyTokenizer(), None) is None
 
 
+def test_compact_logs_risk_f_log_preserves_exact_feature_order():
+    result = {
+        "logs_profile": "logs_risk_f_log_hpre_v1",
+        "logs_risk_per_layer": np.asarray([0.1, 0.2], dtype=np.float32),
+        "f_log_per_layer": np.asarray([1.1, 1.2], dtype=np.float32),
+        "logs_union_support_size_per_layer": np.asarray([3, 4]),
+        "logs_tau": 0.03,
+        "logs_transport_top_k": 32,
+        "logs_source_top_k": 16,
+        "logs_target_top_k": 16,
+        "logs_ot_solver": "exact_emd_network_simplex",
+        "logs_state": "decoder_layer_hpre",
+        "logs_semantic_probability": "final_norm_vocabulary_softmax",
+        "logs_semantic_transform": "log1p(vocabulary_size * probability)",
+        "logs_source_distribution": "softmax(cos(o_ffn,hpre_visual)/tau)",
+        "logs_target_distribution": "renorm(mean_head_attention * log_s)",
+        "logs_support": "top_k_over_2_source_union_top_k_over_2_target",
+        "logs_cost": "1-cos(v_i,v_j) + 1-cos(q,v_i) + 1-cos(q,v_j)",
+        "logs_f_log_definition": (
+            "sum_all_visual ||attention_write_m||_2 * (1 + log_s_m)"
+        ),
+        "logs_visual_token_count": 576,
+    }
+
+    compact = _compact_dgst(result)
+
+    np.testing.assert_allclose(
+        compact["logs_risk_f_log"], [0.1, 0.2, 1.1, 1.2]
+    )
+    assert compact["metadata"]["feature_order"] == "concat(logs_risk,f_log)"
+    assert compact["metadata"]["feature_dim"] == 4
+    assert compact["metadata"]["logs_tau"] == 0.03
+    assert compact["metadata"]["logs_transport_top_k"] == 32
+    assert compact["metadata"]["logs_source_top_k"] == 16
+    assert compact["metadata"]["logs_target_top_k"] == 16
+
+
 def test_wrappers_receive_the_same_raw_qa_instruction():
     expected = "Is there a cat?\nAnswer only yes or no."
     assert qa_prompt("llava_1_5_7b", "Is there a cat?") == expected

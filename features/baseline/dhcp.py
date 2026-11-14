@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
-import json
 import os
 from pathlib import Path
 import re
@@ -141,7 +140,6 @@ class DHCPShardWriter:
         self._shard_index = (max(existing) + 1) if existing else 0
         self._buffer: list[np.ndarray] = []
         self._buffer_shape: Optional[tuple[int, ...]] = None
-        self._manifest_entries: list[dict[str, Any]] = []
 
     def add(
         self,
@@ -176,18 +174,9 @@ class DHCPShardWriter:
         shard_name = self._shard_name(self._shard_index)
         destination = self.root / shard_name
         _atomic_numpy_save(destination, stacked)
-        self._manifest_entries.append(
-            {
-                "shard": shard_name,
-                "count": int(stacked.shape[0]),
-                "item_shape": list(stacked.shape[1:]),
-                "dtype": "float16",
-            }
-        )
         self._shard_index += 1
         self._buffer.clear()
         self._buffer_shape = None
-        self._write_manifest()
 
     def close(self) -> None:
         self.flush()
@@ -210,22 +199,6 @@ class DHCPShardWriter:
     @staticmethod
     def _shard_name(index: int) -> str:
         return f"shard_{int(index):06d}.npy"
-
-    def _write_manifest(self) -> None:
-        entries = []
-        manifest_path = self.root / "manifest.json"
-        if manifest_path.exists():
-            with manifest_path.open("r", encoding="utf-8") as handle:
-                current = json.load(handle)
-            entries.extend(current.get("shards", []))
-        entries.extend(self._manifest_entries)
-        payload = {
-            "format": "dhcp-float16-npy-shards-v1",
-            "shards": entries,
-        }
-        _atomic_json_save(manifest_path, payload)
-        self._manifest_entries.clear()
-
 
 class DHCPShardReader:
     """Read individual DHCP items without loading an entire shard into RAM."""
@@ -297,24 +270,6 @@ def _atomic_numpy_save(path: Path, value: np.ndarray) -> None:
     try:
         with os.fdopen(fd, "wb") as handle:
             np.save(handle, value, allow_pickle=False)
-            handle.flush()
-            os.fsync(handle.fileno())
-        os.replace(temporary, path)
-    except Exception:
-        try:
-            os.unlink(temporary)
-        except FileNotFoundError:
-            pass
-        raise
-
-
-def _atomic_json_save(path: Path, value: Mapping[str, Any]) -> None:
-    fd, temporary = tempfile.mkstemp(
-        prefix=f".{path.name}.", suffix=".tmp", dir=path.parent
-    )
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as handle:
-            json.dump(value, handle, indent=2)
             handle.flush()
             os.fsync(handle.fileno())
         os.replace(temporary, path)

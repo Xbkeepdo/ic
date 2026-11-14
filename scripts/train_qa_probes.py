@@ -25,7 +25,11 @@ from detection.qa_probe import (
 )
 from data.qa_benchmark import load_jsonl
 from features.qa_extractor import qa_label_fingerprint
-from utils.config_utils import load_config, qa_extraction_family_flags
+from utils.config_utils import (
+    load_config,
+    manifest_validation_enabled,
+    qa_extraction_family_flags,
+)
 from utils.qa_paths import resolve_qa_output_name, resolve_qa_paths
 
 
@@ -61,6 +65,7 @@ def parse_args():
 def main():
     args = parse_args()
     config = load_config(args.config)
+    validate_fingerprints = manifest_validation_enabled(config)
     family_flags = qa_extraction_family_flags(config)
     if not family_flags["method"] and not family_flags["ads_cgc"]:
         print(
@@ -149,6 +154,7 @@ def main():
             cfg,
             positions,
             feature_sets=feature_sets,
+            hash_contents=validate_fingerprints,
         )
     )
     with open(run_root / "features.pkl", "rb") as handle:
@@ -159,7 +165,12 @@ def main():
         raise ValueError("labels.jsonl contains duplicate QA keys")
     with open(run_root / "image_splits.json", encoding="utf-8") as handle:
         split_manifest = json.load(handle)
-    _validate_training_artifacts(rows, labels, split_manifest)
+    _validate_training_artifacts(
+        rows,
+        labels,
+        split_manifest,
+        validate_fingerprints=validate_fingerprints,
+    )
     # Reporting-only metadata is joined in memory and never stored in features.pkl
     # or consumed by feature_vector, preventing GT feature leakage.
     rows = [
@@ -194,6 +205,7 @@ def main():
                         label_protocol,
                         position,
                         training_input_fingerprint,
+                        validate_fingerprint=validate_fingerprints,
                     )
                 else:
                     result = train_one_seed(
@@ -294,7 +306,11 @@ def _configured_qa_feature_sets(
 
 
 def _validate_training_artifacts(
-    rows: list[dict], labels: dict[str, dict], split_manifest: dict
+    rows: list[dict],
+    labels: dict[str, dict],
+    split_manifest: dict,
+    *,
+    validate_fingerprints: bool = True,
 ) -> None:
     """Reject stale embedded labels/splits before fitting any probe."""
 
@@ -349,7 +365,10 @@ def _validate_training_artifacts(
             raise ValueError(
                 f"Feature {key!r} embeds stale label/split metadata: {mismatches}"
             )
-        if row.get("label_fingerprint") != qa_label_fingerprint(label):
+        if (
+            validate_fingerprints
+            and row.get("label_fingerprint") != qa_label_fingerprint(label)
+        ):
             raise ValueError(
                 f"Feature {key!r} label fingerprint does not match labels.jsonl"
             )
@@ -361,6 +380,7 @@ def _qa_training_input_fingerprint(
     positions: tuple[str, ...],
     *,
     feature_sets: list[str] | tuple[str, ...] | None = None,
+    hash_contents: bool = True,
 ) -> tuple[str, dict]:
     """Fingerprint features, labels, split, probe config, and trainer code."""
 
@@ -381,16 +401,33 @@ def _qa_training_input_fingerprint(
     }
     provenance = {
         "schema_version": "qa-probe-training-provenance-v2",
-        "artifact_sha256": {
-            name: _sha256_file(path) for name, path in required.items()
-        },
         "qa_probe_cfg": cfg,
         "positions": list(positions),
         "feature_sets": list(feature_sets or ()),
-        "code_sha256": {
-            name: _sha256_file(path) for name, path in code_paths.items()
-        },
     }
+    if hash_contents:
+        provenance["artifact_sha256"] = {
+            name: _sha256_file(path) for name, path in required.items()
+        }
+        provenance["code_sha256"] = {
+            name: _sha256_file(path) for name, path in code_paths.items()
+        }
+    else:
+        provenance["schema_version"] = "qa-probe-training-stat-provenance-v1"
+        provenance["artifact_stats"] = {
+            name: {
+                "size": path.stat().st_size,
+                "mtime_ns": path.stat().st_mtime_ns,
+            }
+            for name, path in required.items()
+        }
+        provenance["code_stats"] = {
+            name: {
+                "size": path.stat().st_size,
+                "mtime_ns": path.stat().st_mtime_ns,
+            }
+            for name, path in code_paths.items()
+        }
     encoded = json.dumps(
         provenance,
         ensure_ascii=False,
@@ -398,6 +435,8 @@ def _qa_training_input_fingerprint(
         separators=(",", ":"),
         default=str,
     ).encode("utf-8")
+    if not hash_contents:
+        return "no-content-hash:" + encoded.decode("utf-8"), provenance
     return hashlib.sha256(encoded).hexdigest(), provenance
 
 
@@ -426,6 +465,8 @@ def _validate_reusable_result(
     label_protocol: str,
     position: str,
     training_input_fingerprint: str,
+    *,
+    validate_fingerprint: bool = True,
 ) -> None:
     expected = {
         "feature_set": feature_set,
@@ -436,8 +477,9 @@ def _validate_reusable_result(
         "split_protocol": "strict_82_no_validation",
         "checkpoint_selection": "minimum_train_loss",
         "threshold_selection": "train_f1",
-        "training_input_fingerprint": training_input_fingerprint,
     }
+    if validate_fingerprint:
+        expected["training_input_fingerprint"] = training_input_fingerprint
     mismatches = {
         key: {"expected": value, "found": result.get(key)}
         for key, value in expected.items()

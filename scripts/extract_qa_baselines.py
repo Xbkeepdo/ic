@@ -161,6 +161,7 @@ def _extract_partition(
         baseline_dir=baseline_dir,
         config=baseline_cfg,
         device=device,
+        inline_dhcp=True,
         resume=resume,
         worker_id=worker_id,
         parallel=parallel,
@@ -302,17 +303,21 @@ def main() -> None:
             "adaptation. SVAR-official caption canonical/surface lookup has "
             "no reliable yes/no-QA analogue and is intentionally unavailable."
         )
-    expected_manifest = _expected_manifest(
-        model=args.model,
-        dataset=args.dataset,
-        label_protocol=label_protocol,
-        model_cfg=model_cfg,
-        baseline_cfg=baseline_cfg,
-        methods=methods,
-        questions_path=questions_path,
-        generations_path=generations_path,
-        labels_path=labels_path,
-        selected_keys=tuple(question_map),
+    expected_manifest = (
+        _expected_manifest(
+            model=args.model,
+            dataset=args.dataset,
+            label_protocol=label_protocol,
+            model_cfg=model_cfg,
+            baseline_cfg=baseline_cfg,
+            methods=methods,
+            questions_path=questions_path,
+            generations_path=generations_path,
+            labels_path=labels_path,
+            selected_keys=tuple(question_map),
+        )
+        if validate_manifests
+        else {}
     )
     baseline_dir.mkdir(parents=True, exist_ok=True)
     manifest_path = baseline_dir / MANIFEST_NAME
@@ -327,7 +332,7 @@ def main() -> None:
     if (
         bool(args.resume)
         and (baseline_dir / "features.pkl").exists()
-        and not any((baseline_dir / "feature_parts").glob("part-*.pkl"))
+        and not any((baseline_dir / "feature_parts").glob("part*.pkl"))
     ):
         raise RuntimeError(
             "Cannot safely resume QA baseline extraction from features.pkl alone; "
@@ -416,12 +421,16 @@ def main() -> None:
         **expected_manifest,
         "status": "complete",
         "num_records": len(records),
-        "features_sha256": sha256_file(feature_path),
-        "probe_splits_sha256": sha256_file(split_path),
         "question_counts": split_manifest["question_counts"],
         "image_counts": split_manifest["image_counts"],
     }
     if validate_manifests:
+        completed.update(
+            {
+                "features_sha256": sha256_file(feature_path),
+                "probe_splits_sha256": sha256_file(split_path),
+            }
+        )
         atomic_write_json(manifest_path, completed)
     print(
         f"[extract_qa_baselines] Complete: {args.model}/{args.dataset}/"
@@ -543,7 +552,7 @@ def _validate_or_initialize_manifest(
     artifacts_exist = any(
         (
             (baseline_dir / "features.pkl").exists(),
-            any((baseline_dir / "feature_parts").glob("part-*.pkl")),
+            any((baseline_dir / "feature_parts").glob("part*.pkl")),
             (baseline_dir / "dhcp").exists(),
             (baseline_dir / "halloc").exists(),
         )

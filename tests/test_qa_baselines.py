@@ -450,6 +450,40 @@ class QABaselineTests(unittest.TestCase):
             "object_hallucination_yes_only",
         )
 
+        all_adapter = QABaselineAdapter(
+            _FakeRuntime(),
+            label_protocol="answer_correctness_all",
+        )
+        all_record = all_adapter.build_record(
+            image=SimpleNamespace(),
+            question=question,
+            generation={"key": "q-yes", "prediction": "yes"},
+            label_row={
+                "key": "q-yes",
+                "label": 0,
+                "object_hallucination_yes_only_label": 1,
+                "probe_split": "train",
+            },
+            response_token_ids=[99, 7],
+            target_index=0,
+            model_output=_model_output(),
+        )
+        reused = adapter.relabel_record(
+            all_record,
+            label_row={
+                "key": "q-yes",
+                "label": 0,
+                "object_hallucination_yes_only_label": 1,
+                "probe_split": "train",
+            },
+        )
+        self.assertEqual(reused["label"], 1)
+        self.assertEqual(
+            reused["metadata"]["qa"]["label_field"],
+            "object_hallucination_yes_only_label",
+        )
+        self.assertEqual(all_record["label"], 0)
+
     def test_three_seed_projectaway_training_writes_protocol_isolated_summary(self):
         protocol = "object_hallucination_yes_only"
         records = []

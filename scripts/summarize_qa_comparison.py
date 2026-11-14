@@ -77,6 +77,12 @@ def parse_args() -> argparse.Namespace:
         "--seeds", nargs="+", type=int, default=list(DEFAULT_SEEDS)
     )
     parser.add_argument(
+        "--exclude-methods",
+        nargs="+",
+        default=(),
+        help="Omit named native baseline rows from the comparison.",
+    )
+    parser.add_argument(
         "--allow-unscoped-probe-summary",
         action="store_true",
         help=(
@@ -129,22 +135,30 @@ def main() -> None:
         if args.probe_summary
         else _discover_probe_summary(run_dir, args.label_protocol)
     )
-    baseline_path = (
-        Path(args.baseline_summary)
-        if args.baseline_summary
-        else _discover_baseline_summary(
-            run_dir,
-            args.model,
-            args.dataset,
-            args.label_protocol,
-            trainer=str(
-                (config.get("qa_benchmarks") or {}).get(
-                    "baseline_trainer", "native_paper"
-                )
-            ),
-            num_seeds=len(args.seeds),
-        )
+    baseline_positions = tuple(
+        str(value)
+        for value in qa_cfg.get("position_protocols", ["prompt_last_token"])
     )
+    if args.baseline_summary:
+        baseline_paths = {"prompt_last_token": Path(args.baseline_summary)}
+    else:
+        baseline_paths = {
+            position: _discover_baseline_summary(
+                run_dir,
+                args.model,
+                args.dataset,
+                args.label_protocol,
+                position=position,
+                trainer=str(
+                    (config.get("qa_benchmarks") or {}).get(
+                        "baseline_trainer", "native_paper"
+                    )
+                ),
+                num_seeds=len(args.seeds),
+            )
+            for position in baseline_positions
+        }
+    baseline_path = baseline_paths["prompt_last_token"]
     feature_path = (
         Path(args.feature_summary)
         if args.feature_summary
@@ -162,9 +176,14 @@ def main() -> None:
         probe_summary_path=probe_path,
         baseline_summary=_load_json_object(baseline_path),
         baseline_summary_path=baseline_path,
+        baseline_summaries_by_position={
+            position: (_load_json_object(path), path)
+            for position, path in baseline_paths.items()
+        },
         feature_summary=feature_summary,
         feature_summary_path=feature_path if feature_summary is not None else None,
         allow_unscoped_probe_summary=bool(args.allow_unscoped_probe_summary),
+        excluded_baseline_methods=args.exclude_methods,
     )
     output_dir = (
         Path(args.output_dir)
@@ -192,9 +211,13 @@ def build_comparison(
     probe_summary_path: Path,
     baseline_summary: Mapping[str, Any],
     baseline_summary_path: Path,
+    baseline_summaries_by_position: Mapping[
+        str, tuple[Mapping[str, Any], Path]
+    ] | None = None,
     feature_summary: Mapping[str, Any] | None = None,
     feature_summary_path: Path | None = None,
     allow_unscoped_probe_summary: bool = False,
+    excluded_baseline_methods: Sequence[str] = (),
 ) -> dict[str, Any]:
     seeds = _normalize_expected_seeds(expected_seeds)
     probe_methods, probe_metadata, scoped = _probe_methods_and_metadata(
@@ -203,15 +226,6 @@ def build_comparison(
         dataset=dataset,
         label_protocol=label_protocol,
         allow_unscoped=allow_unscoped_probe_summary,
-    )
-    baseline_metadata = _validate_baseline_scope(
-        baseline_summary,
-        model=model,
-        dataset=dataset,
-        label_protocol=label_protocol,
-    )
-    _validate_seed_list(
-        baseline_summary.get("seeds"), seeds, "native baseline summary"
     )
     top_probe_seeds = probe_metadata.get("seeds")
     if top_probe_seeds is not None:
@@ -255,64 +269,94 @@ def build_comparison(
             }
         )
 
-    baseline_seed_outputs = _load_baseline_seed_outputs(
-        baseline_summary, baseline_summary_path, seeds
-    )
-    baseline_methods = baseline_summary.get("methods")
-    if not isinstance(baseline_methods, Mapping) or not baseline_methods:
-        raise ValueError("Native baseline summary has no methods mapping")
-    baseline_coverage = _baseline_coverage(
-        baseline_summary, baseline_metadata
-    )
-    for method, aggregate in baseline_methods.items():
-        if not isinstance(aggregate, Mapping):
-            raise ValueError(
-                f"Baseline aggregate for {method!r} must be a mapping"
-            )
-        metrics = _baseline_metrics_from_aggregate(aggregate)
-        threshold_metrics = _baseline_threshold_metrics_from_aggregate(
-            aggregate
+    baseline_sources = baseline_summaries_by_position or {
+        "prompt_last_token": (baseline_summary, baseline_summary_path)
+    }
+    baseline_coverages: dict[str, Any] = {}
+    baseline_seed_paths_used: list[str] = []
+    for baseline_position, (position_summary, position_path) in baseline_sources.items():
+        baseline_metadata = _validate_baseline_scope(
+            position_summary,
+            model=model,
+            dataset=dataset,
+            label_protocol=label_protocol,
         )
-        if baseline_seed_outputs:
-            seed_metrics = [
-                _baseline_seed_metrics(output, str(method))
-                for output in baseline_seed_outputs
-            ]
-            complete = _aggregate_metric_rows(seed_metrics)
-            _validate_common_statistics(
-                metrics,
-                complete,
-                source=f"native baseline {method!r}",
+        _validate_seed_list(
+            position_summary.get("seeds"), seeds, "native baseline summary"
+        )
+        baseline_seed_outputs = _load_baseline_seed_outputs(
+            position_summary, position_path, seeds
+        )
+        baseline_methods = position_summary.get("methods")
+        if not isinstance(baseline_methods, Mapping) or not baseline_methods:
+            raise ValueError("Native baseline summary has no methods mapping")
+        baseline_coverage = _baseline_coverage(
+            position_summary, baseline_metadata
+        )
+        baseline_coverages[baseline_position] = baseline_coverage
+        baseline_seed_paths_used.extend(
+            str(path)
+            for path in _baseline_seed_paths(
+                position_summary, position_path, seeds
             )
-            metrics = complete
-            if threshold_metrics:
-                threshold_metrics = {
-                    mode: _aggregate_metric_rows([
-                        _baseline_seed_metrics(
-                            output, str(method), threshold_mode=mode
-                        )
-                        for output in baseline_seed_outputs
-                    ])
-                    for mode in threshold_metrics
+            if path.is_file()
+        )
+        excluded = {
+            str(value).strip().lower().replace("-", "_")
+            for value in excluded_baseline_methods
+        }
+        for method, aggregate in baseline_methods.items():
+            if str(method).strip().lower().replace("-", "_") in excluded:
+                continue
+            if not isinstance(aggregate, Mapping):
+                raise ValueError(
+                    f"Baseline aggregate for {method!r} must be a mapping"
+                )
+            metrics = _baseline_metrics_from_aggregate(aggregate)
+            threshold_metrics = _baseline_threshold_metrics_from_aggregate(
+                aggregate
+            )
+            if baseline_seed_outputs:
+                seed_metrics = [
+                    _baseline_seed_metrics(output, str(method))
+                    for output in baseline_seed_outputs
+                ]
+                complete = _aggregate_metric_rows(seed_metrics)
+                _validate_common_statistics(
+                    metrics,
+                    complete,
+                    source=(
+                        f"native baseline {method!r} at {baseline_position}"
+                    ),
+                )
+                metrics = complete
+                if threshold_metrics:
+                    threshold_metrics = {
+                        mode: _aggregate_metric_rows([
+                            _baseline_seed_metrics(
+                                output, str(method), threshold_mode=mode
+                            )
+                            for output in baseline_seed_outputs
+                        ])
+                        for mode in threshold_metrics
+                    }
+            rows.append(
+                {
+                    "family": "native_baseline",
+                    "method": str(method),
+                    "display_name": str(
+                        aggregate.get("display_name") or method
+                    ),
+                    "position": baseline_position,
+                    "position_definition": _position_definition(
+                        baseline_position
+                    ),
+                    "coverage": baseline_coverage,
+                    "metrics": metrics,
+                    "metrics_by_threshold": threshold_metrics,
+                    "source": str(position_path),
                 }
-        rows.append(
-            {
-                "family": "native_baseline",
-                "method": str(method),
-                "display_name": str(
-                    aggregate.get("display_name") or method
-                ),
-                "position": "prompt_last_token",
-                "position_definition": (
-                    "QA-adapted baseline at the final prompt token; this "
-                    "causal state predicts the first generated token."
-                ),
-                "coverage": baseline_coverage,
-                "metrics": metrics,
-                "metrics_by_threshold": threshold_metrics,
-                "source": str(baseline_summary_path),
-            }
-        )
+            )
 
     active_positions = [
         position
@@ -356,23 +400,22 @@ def build_comparison(
         "coverage_metadata": {
             "probe_summary": active_probe_coverage,
             "feature_extraction": active_extraction_coverage,
-            "native_baseline": baseline_coverage,
+            "native_baseline": baseline_coverages,
         },
         "sources": {
             "probe_summary": str(probe_summary_path),
-            "baseline_summary": str(baseline_summary_path),
+            "baseline_summary": {
+                position: str(path)
+                for position, (_, path) in baseline_sources.items()
+            },
             "feature_summary": (
                 str(feature_summary_path)
                 if feature_summary_path is not None
                 else None
             ),
-            "baseline_seed_results_used_for_dual_class_columns": [
-                str(path)
-                for path in _baseline_seed_paths(
-                    baseline_summary, baseline_summary_path, seeds
-                )
-                if path.is_file()
-            ],
+            "baseline_seed_results_used_for_dual_class_columns": (
+                baseline_seed_paths_used
+            ),
         },
         "rows": rows,
     }
@@ -727,6 +770,18 @@ def _baseline_seed_metrics(
                 f"Seed result has no MetaToken classifier {classifier!r}"
             )
         result = metatoken[classifier]
+    elif method.startswith("token_grounding_"):
+        classifier = method[len("token_grounding_"):]
+        token_grounding = methods.get("token_grounding")
+        if (
+            not isinstance(token_grounding, Mapping)
+            or classifier not in token_grounding
+        ):
+            raise ValueError(
+                "Seed result has no TokenGrounding classifier "
+                f"{classifier!r}"
+            )
+        result = token_grounding[classifier]
     else:
         result = methods.get(method)
     if not isinstance(result, Mapping):
@@ -1192,6 +1247,7 @@ def _discover_baseline_summary(
     dataset: str,
     label_protocol: str,
     *,
+    position: str = "prompt_last_token",
     trainer: str = "native_paper",
     num_seeds: int = 3,
 ) -> Path:
@@ -1201,19 +1257,23 @@ def _discover_baseline_summary(
     if normalized in {"native", "paper"}:
         normalized = "native_paper"
     base = run_dir / "baseline" / label_protocol / "results"
+    position_suffix = (
+        "" if position == "prompt_last_token" else f"_{position}"
+    )
     if normalized == "shared_torch_mlp":
         stem = (
-            f"{model}_{dataset}_{label_protocol}_qa_baselines_"
+            f"{model}_{dataset}_{label_protocol}{position_suffix}_qa_baselines_"
             f"shared_torch_mlp_{int(num_seeds)}seed.json"
         )
         candidates = (base / "shared_torch_mlp" / stem,)
     elif normalized == "native_paper":
         stem = (
-            f"{model}_{dataset}_{label_protocol}_qa_baselines_"
+            f"{model}_{dataset}_{label_protocol}{position_suffix}_qa_baselines_"
             f"{int(num_seeds)}seed.json"
         )
         candidates = (
-            base / "native_paper" / stem,
+            base / position / stem,
+            base / f"native_paper_{position}" / stem,
             base / stem,
         )
     else:

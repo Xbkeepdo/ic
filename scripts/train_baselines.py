@@ -14,6 +14,8 @@ from typing import Any, Mapping, Optional, Sequence
 
 import numpy as np
 import torch
+from sklearn.metrics import f1_score
+from sklearn.model_selection import ParameterGrid
 from torch import nn
 from torch.utils.data import DataLoader, Dataset, WeightedRandomSampler
 
@@ -25,6 +27,7 @@ from detection.baselines import (
     baseline_vector,
     build_dense_baseline_matrix,
     build_metatoken_classifier,
+    build_token_grounding_classifier,
     evaluate_detection_scores,
     raw_labels_to_hallucination_targets,
     select_detection_threshold,
@@ -698,12 +701,9 @@ def _shared_mlp_baseline_matrix(
                 np.asarray(per_layer, dtype=np.float32).reshape(-1),
             ))
         elif normalized == "dhcp":
-            if dhcp_reader is None:
-                raise ValueError(
-                    "DHCP shared MLP requires a DHCPShardReader"
-                )
-            vector = dhcp_reader.load(
-                _dhcp_reference(get_baseline_payload(record, normalized))
+            vector = _load_dhcp_payload(
+                get_baseline_payload(record, normalized),
+                dhcp_reader,
             )
         else:
             raise ValueError(f"Unsupported shared-MLP baseline: {method!r}")
@@ -1511,6 +1511,18 @@ def _baseline_method_variants(
                 "token_grounding": "TokenGrounding",
                 "instruct_lens": "InsLen",
             }
+            if normalized == "token_grounding" and isinstance(result, Mapping):
+                classifier_keys = tuple(
+                    key for key in ("xgb", "rf", "mlp") if key in result
+                )
+                if classifier_keys:
+                    for classifier in classifier_keys:
+                        key = f"token_grounding_{classifier}"
+                        variants[key] = (
+                            f"TokenGrounding-{classifier.upper()}",
+                            result[classifier],
+                        )
+                    continue
             variants[normalized] = (labels.get(normalized, str(method)), result)
     return variants
 
@@ -1820,6 +1832,7 @@ def _train_metatoken(
         )[:2]
     result = {}
     metatoken_cfg = dict(cfg.get("metatoken") or {})
+    standardize = bool(metatoken_cfg.get("standardize", True))
     configured_classifiers = metatoken_cfg.get("classifiers", ("lr", "gb"))
     if isinstance(configured_classifiers, str):
         configured_classifiers = [configured_classifiers]
@@ -1834,7 +1847,11 @@ def _train_metatoken(
             f"got {classifiers}"
         )
     for kind in dict.fromkeys(classifiers):
-        classifier = build_metatoken_classifier(kind, seed=int(cfg.get("seed", 42)))
+        classifier = build_metatoken_classifier(
+            kind,
+            seed=int(cfg.get("seed", 42)),
+            standardize=standardize,
+        )
         classifier.fit(
             matrices["train"][0],
             raw_labels_to_hallucination_targets(matrices["train"][1]),
@@ -1854,7 +1871,7 @@ def _train_metatoken(
                 "classifier": "LogisticRegression(lbfgs)"
                 if kind == "lr"
                 else "GradientBoostingClassifier(n_estimators=100)",
-                "standardize": True,
+                "standardize": standardize,
             },
             "input_dim": int(matrices["train"][0].shape[1]),
             "threshold": threshold,
@@ -2021,7 +2038,7 @@ def _train_token_grounding(
     device,
     positive_class,
 ) -> dict[str, Any]:
-    """Train one detector on concat(ADS per layer, CGC per layer)."""
+    """Run the three classifier grids released by TokenGrounding."""
     token_cfg = dict(cfg.get("token_grounding") or {})
     matrices = {
         split: build_dense_baseline_matrix(
@@ -2032,86 +2049,147 @@ def _train_token_grounding(
     }
     seed = int(cfg.get("seed", 42))
     strict_82 = bool(cfg.get("_strict_82_no_validation", False))
-    hidden_dim = int(
-        _setting(token_cfg, "hidden_dim", "hidden_size", default=248)
+    classifier_names = token_cfg.get("classifiers", ("xgb", "rf", "mlp"))
+    if isinstance(classifier_names, str):
+        classifier_names = [classifier_names]
+    classifier_names = tuple(
+        dict.fromkeys(str(value).strip().lower() for value in classifier_names)
     )
-    _seed_everything(seed)
-    model = SVARMLP(matrices["train"][0].shape[1], hidden_dim=hidden_dim)
-    trained = train_torch_detector(
-        model=model,
-        X_train=matrices["train"][0],
-        raw_y_train=matrices["train"][1],
-        X_val=matrices["val"][0],
-        raw_y_val=matrices["val"][1],
-        X_test=matrices["test"][0],
-        raw_y_test=matrices["test"][1],
-        epochs=int(_setting(token_cfg, "epochs", "max_epochs", default=50)),
-        learning_rate=float(token_cfg.get("learning_rate", 1e-3)),
-        batch_size=int(token_cfg.get("batch_size", 32)),
-        device=device,
-        weight_decay=float(token_cfg.get("weight_decay", 0.0)),
-        weighted_sampler=bool(token_cfg.get("weighted_sampler", False)),
-        standardize=bool(token_cfg.get("standardize", False)),
-        early_stopping_patience=int(
-            token_cfg.get("early_stopping_patience", 5)
-        ),
-        seed=seed,
-        positive_class=positive_class,
-        strict_82_no_validation=strict_82,
-    )
-    chosen_device = torch.device(device)
-    train_scores = torch_hallucination_scores(
-        model, matrices["val"][0], chosen_device
-    )
-    test_scores = torch_hallucination_scores(
-        model, matrices["test"][0], chosen_device
-    )
-    path = checkpoint_dir / "token_grounding.pt"
-    _atomic_torch_save(
-        path,
-        {
-            "state_dict": trained.state_dict,
-            "input_dim": int(matrices["train"][0].shape[1]),
-            "hidden_dim": hidden_dim,
-            "threshold": trained.threshold,
-            "threshold_score_class": str(positive_class),
-            "feature_definition": "concat_ads_per_layer_cgc_per_layer",
+    if not classifier_names or set(classifier_names) - {"xgb", "rf", "mlp"}:
+        raise ValueError(
+            "TokenGrounding classifiers must be a non-empty subset of "
+            "['xgb', 'rf', 'mlp']"
+        )
+
+    default_grids: dict[str, dict[str, list[Any]]] = {
+        "xgb": {
+            "max_depth": [4, 6, 8],
+            "learning_rate": [0.1, 0.05],
+            "n_estimators": [100, 200, 500],
         },
-    )
-    return {
-        "paper_config": {
-            "feature_definition": "concat_ads_per_layer_cgc_per_layer",
-            "hidden_dim": hidden_dim,
-            "learning_rate": float(token_cfg.get("learning_rate", 1e-3)),
-            "weight_decay": float(token_cfg.get("weight_decay", 0.0)),
-            "batch_size": int(token_cfg.get("batch_size", 32)),
-            "epochs": int(
-                _setting(token_cfg, "epochs", "max_epochs", default=50)
-            ),
-            "standardize": bool(token_cfg.get("standardize", False)),
-            "early_stopping_patience": (
-                None
-                if strict_82
-                else int(token_cfg.get("early_stopping_patience", 5))
-            ),
-            "positive_class": str(positive_class),
+        "rf": {
+            "max_depth": [None, 10, 20],
+            "n_estimators": [200, 400, 600],
         },
-        "input_dim": int(matrices["train"][0].shape[1]),
-        "threshold": trained.threshold,
-        "threshold_score_class": str(positive_class),
-        "val_metrics": trained.val_metrics,
-        "test_metrics": trained.test_metrics,
-        "threshold_reports": _build_threshold_reports(
-            train_labels=matrices["val"][1],
-            train_scores=train_scores,
-            test_labels=matrices["test"][1],
-            test_scores=test_scores,
-            selected_threshold=trained.threshold,
-            positive_class=positive_class,
-        ),
-        "history": trained.history,
-        "checkpoint": str(path),
+        "mlp": {
+            "hidden_layer_sizes": [[64], [128], [256]],
+            "learning_rate_init": [0.01, 0.001],
+            "solver": ["adam", "sgd"],
+            "max_iter": [500],
+        },
     }
+    train_targets = raw_labels_to_hallucination_targets(matrices["train"][1])
+    results: dict[str, Any] = {}
+    for kind in classifier_names:
+        configured_grid = token_cfg.get(kind, default_grids[kind])
+        if not isinstance(configured_grid, Mapping):
+            raise ValueError(f"TokenGrounding {kind} grid must be a mapping")
+        grid = {
+            str(name): value if isinstance(value, list) else [value]
+            for name, value in configured_grid.items()
+        }
+        best_classifier = None
+        best_params: dict[str, Any] | None = None
+        best_score = -math.inf
+        candidate_rows: list[dict[str, Any]] = []
+        for params in ParameterGrid(grid):
+            classifier = build_token_grounding_classifier(
+                kind, params, seed=seed
+            )
+            classifier.fit(matrices["train"][0], train_targets)
+            selection_hall_scores = sklearn_hallucination_scores(
+                classifier, matrices["val"][0]
+            )
+            selection_real_predictions = (
+                selection_hall_scores < 0.5
+            ).astype(np.int64)
+            selection_f1 = float(f1_score(
+                matrices["val"][1],
+                selection_real_predictions,
+                pos_label=1,
+                zero_division=0,
+            ))
+            candidate_rows.append({
+                "params": dict(params),
+                "selection_real_f1": selection_f1,
+            })
+            if selection_f1 > best_score:
+                best_score = selection_f1
+                best_params = dict(params)
+                best_classifier = classifier
+        if best_classifier is None or best_params is None:
+            raise RuntimeError(
+                f"TokenGrounding-{kind} grid produced no classifier"
+            )
+
+        train_scores = sklearn_hallucination_scores(
+            best_classifier, matrices["val"][0]
+        )
+        test_scores = sklearn_hallucination_scores(
+            best_classifier, matrices["test"][0]
+        )
+        train_f1_threshold = select_detection_threshold(
+            matrices["val"][1],
+            train_scores,
+            positive_class=positive_class,
+        )
+        # The released classifiers call ``predict``, whose binary decision is
+        # equivalent to a probability threshold of 0.5. Preserve that native
+        # decision in the fixed-threshold report; the common ENDAC headline
+        # continues to use a train-F1 threshold for comparability.
+        native_threshold = 0.5
+        path = checkpoint_dir / f"token_grounding_{kind}.pkl"
+        save_pkl(best_classifier, str(path))
+        results[kind] = {
+            "paper_config": {
+                "repository": "tuandung2812alt3/token-grounding-detector",
+                "feature_definition": "concat_ads_per_layer_cgc_per_layer",
+                "classifier": kind,
+                "parameter_grid": grid,
+                "best_params": best_params,
+                "selection_metric": "real_f1_at_native_predict_threshold",
+                "selection_split": (
+                    "outer_train_fallback"
+                    if strict_82
+                    else "validation"
+                ),
+                "native_prediction_threshold": native_threshold,
+                "standardize": False,
+                "positive_class": "real",
+            },
+            "input_dim": int(matrices["train"][0].shape[1]),
+            "threshold": train_f1_threshold,
+            "threshold_score_class": str(positive_class),
+            "train_metrics": evaluate_detection_scores(
+                matrices["val"][1],
+                train_scores,
+                train_f1_threshold,
+                positive_class=positive_class,
+            ),
+            "test_metrics": evaluate_detection_scores(
+                matrices["test"][1],
+                test_scores,
+                train_f1_threshold,
+                positive_class=positive_class,
+            ),
+            "threshold_reports": _build_threshold_reports(
+                train_labels=matrices["val"][1],
+                train_scores=train_scores,
+                test_labels=matrices["test"][1],
+                test_scores=test_scores,
+                selected_threshold=train_f1_threshold,
+                positive_class=positive_class,
+                fixed_threshold=native_threshold,
+            ),
+            "grid_search": candidate_rows,
+            "checkpoint": str(path),
+            "selection_protocol": (
+                "repository_grid_train_f1_fallback_native_predict"
+                if strict_82
+                else "repository_grid_validation_f1_native_predict"
+            ),
+        }
+    return results
 
 
 def _train_dhcp(
@@ -2575,8 +2653,14 @@ class DHCPRecordDataset(Dataset):
         if not self.records:
             raise ValueError("No DHCP records found in split")
         self.reader = DHCPShardReader(shard_root)
-        first_ref = _dhcp_reference(get_baseline_payload(self.records[0], "dhcp"))
-        self.item_shape = tuple(int(value) for value in first_ref["shape"])
+        first_payload = get_baseline_payload(self.records[0], "dhcp")
+        if "attention" in first_payload:
+            self.item_shape = tuple(
+                int(value) for value in np.asarray(first_payload["attention"]).shape
+            )
+        else:
+            first_ref = _dhcp_reference(first_payload)
+            self.item_shape = tuple(int(value) for value in first_ref["shape"])
         self.targets = raw_labels_to_hallucination_targets(
             [record["label"] for record in self.records]
         ).tolist()
@@ -2586,7 +2670,11 @@ class DHCPRecordDataset(Dataset):
 
     def __getitem__(self, index):
         payload = get_baseline_payload(self.records[index], "dhcp")
-        value = self.reader.load(_dhcp_reference(payload), as_tensor=True).float()
+        value = _load_dhcp_payload(
+            payload,
+            self.reader,
+            as_tensor=True,
+        ).float()
         return value, int(self.targets[index])
 
 
@@ -2678,6 +2766,27 @@ def _halloc_scores(model, loader, device, criterion):
 
 def _dhcp_reference(payload):
     return payload.get("shard_reference", payload)
+
+
+def _load_dhcp_payload(
+    payload: Mapping[str, Any],
+    reader: Optional[DHCPShardReader],
+    *,
+    as_tensor: bool = False,
+):
+    """Load both legacy shard-backed and QA inline DHCP tensors."""
+
+    if "attention" in payload:
+        value = np.asarray(payload["attention"], dtype=np.float16)
+        if value.size == 0 or not np.isfinite(value).all():
+            raise ValueError("Inline DHCP attention is empty or non-finite")
+        return torch.from_numpy(value.copy()) if as_tensor else value
+    if reader is None:
+        raise ValueError("Shard-backed DHCP payload requires a DHCPShardReader")
+    return reader.load(
+        _dhcp_reference(payload),
+        as_tensor=as_tensor,
+    )
 
 
 def _setting(

@@ -1,0 +1,81 @@
+# QA benchmark for the selected main method and six paper-native baselines.
+# POPE and CLEVR use both requested causal positions.  AMBER must use the
+# companion *_amber.yaml config because it has no reliable exact object span.
+extends: model_configs_coco4000_512_endac_baselines_v2.yaml
+
+qa_benchmarks:
+  extraction_mode: "all"
+  baseline_trainer: "native_paper"
+  # Keep this explicit even though the base declares it: run_qa.sh reads this
+  # list before Python resolves YAML inheritance.
+  baseline_label_protocols:
+    - "object_hallucination_yes_only"
+    - "answer_correctness_all"
+  position_protocols:
+    - "prompt_last_token"
+    - "question_object_pre_token"
+
+feature_extraction:
+  baseline:
+    token_grounding:
+      # Runtime reduction requested for the formal QA comparison: retain the
+      # repository's sklearn-MLP grid and skip its XGBoost/RF alternatives.
+      classifiers: ["mlp"]
+  # TokenGrounding computes its paper ADS/CGC payload inside the baseline
+  # adapter.  Disable the separate generic ADS+CGC probe family here.
+  ads_cgc:
+    enabled: false
+  dgst_t:
+    enabled: true
+    feature_output_profile: "logs_risk_f_log_hpre"
+    target_gate_mode: "logs_risk_f_log"
+    tau: 0.03
+    transport_top_k: 32
+    ot_solver: "emd"
+    source_tau_values: null
+    transport_top_k_values: null
+    semantic_chunk_size: 64
+    compute_prompt_cafe: false
+    compute_ffn_injection_features: false
+    compute_topmass_085: false
+    compute_capped_topmass_085: false
+
+training:
+  baseline:
+    trainers: ["native_paper"]
+    methods:
+      - "metatoken"
+      - "svar"
+      - "dhcp"
+      - "projectaway"
+      - "token_grounding"
+      - "instruct_lens"
+    seeds: [43, 44, 45]
+  torch_probe:
+    hidden_sizes: [128]
+    structure: "Linear-ReLU-Dropout"
+    activation: "relu"
+    batch_norm: false
+    dropout: 0.3
+    drop_last: false
+    initialization: "kaiming_uniform_relu"
+    output_dim: 1
+    optimizer: "adam"
+    learning_rate: 0.001
+    weight_decay: 0.00001
+    batch_size: 256
+    max_epochs: 100
+    loss: "bce_with_logits"
+    feature_normalization: "train_zscore"
+    scheduler_monitor: "train_loss"
+    lr_factor: 0.5
+    lr_patience: 5
+    early_stopping_monitor: "train_loss"
+    early_stopping_patience: 10
+    checkpoint_selection: "minimum_train_loss"
+    fixed_threshold: 0.5
+    threshold_reporting: ["fixed_0.5", "train_f1"]
+    seeds: [43, 44, 45]
+  feature_sets:
+    method:
+      - "logs_risk_f_log"

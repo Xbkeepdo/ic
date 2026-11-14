@@ -89,6 +89,7 @@ class BaselineRuntime:
         worker_id: int = 0,
         parallel: bool = False,
         resume: bool = True,
+        inline_dhcp: bool = False,
         dhcp_writer: Optional[DHCPShardWriter] = None,
         clip_extractor: Optional[HalLocCLIPFeatureExtractor] = None,
         output_layer: Optional[Any] = None,
@@ -138,6 +139,7 @@ class BaselineRuntime:
         )
         self._closed = False
         self._resume = bool(resume)
+        self.inline_dhcp = bool(inline_dhcp)
 
         # Heavy controlled-baseline resources are initialized on first use.
         # An official-SVAR-only resume must not load CLIP, allocate a DHCP
@@ -165,6 +167,8 @@ class BaselineRuntime:
 
     def _ensure_dhcp_writer(self) -> Optional[DHCPShardWriter]:
         if "dhcp" not in self.methods:
+            return None
+        if self.inline_dhcp:
             return None
         if self.dhcp_writer is None:
             shard_prefix = f"worker_{self.worker_id}" if self.parallel else None

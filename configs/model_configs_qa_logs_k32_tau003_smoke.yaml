@@ -1,0 +1,9 @@
+# Two-row method-only validation config used before the full shared run.
+extends: model_configs_qa_logs_k32_tau003.yaml
+
+qa_benchmarks:
+  extraction_mode: "method_only"
+
+feature_extraction:
+  baseline:
+    enabled: false

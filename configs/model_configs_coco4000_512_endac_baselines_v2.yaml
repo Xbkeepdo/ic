@@ -174,13 +174,21 @@ feature_extraction:
     projectaway:
       detection_only: true
     token_grounding:
-      hidden_dim: 248
-      learning_rate: 0.001
-      weight_decay: 0.0
-      batch_size: 32
-      epochs: 50
-      standardize: false
-      weighted_sampler: false
+      # Native repository detector: grid-search XGB, RF, and sklearn MLP
+      # separately on concat(ADS per layer, CGC per layer).
+      classifiers: ["xgb", "rf", "mlp"]
+      xgb:
+        max_depth: [4, 6, 8]
+        learning_rate: [0.1, 0.05]
+        n_estimators: [100, 200, 500]
+      rf:
+        max_depth: [null, 10, 20]
+        n_estimators: [200, 400, 600]
+      mlp:
+        hidden_layer_sizes: [[64], [128], [256]]
+        learning_rate_init: [0.01, 0.001]
+        solver: ["adam", "sgd"]
+        max_iter: [500]
       ads:
         top_patch_pct: 0.10
         connectivity: 8

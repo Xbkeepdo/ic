@@ -57,17 +57,22 @@ QA_DGST_COMPONENTS = (
 
 
 class QAProbe(nn.Module):
-    def __init__(self, input_dim: int, hidden_sizes=(128, 64, 32), dropout=0.3):
+    def __init__(
+        self,
+        input_dim: int,
+        hidden_sizes=(128, 64, 32),
+        dropout=0.3,
+        *,
+        batch_norm: bool = True,
+    ):
         super().__init__()
         layers = []
         previous = input_dim
         for hidden in hidden_sizes:
-            layers.extend((
-                nn.Linear(previous, hidden),
-                nn.BatchNorm1d(hidden),
-                nn.ReLU(),
-                nn.Dropout(dropout),
-            ))
+            layers.append(nn.Linear(previous, hidden))
+            if batch_norm:
+                layers.append(nn.BatchNorm1d(hidden))
+            layers.extend((nn.ReLU(), nn.Dropout(dropout)))
             previous = hidden
         layers.append(nn.Linear(previous, 1))
         self.network = nn.Sequential(*layers)
@@ -469,12 +474,10 @@ def _qa_image_identity(row: Mapping[str, object]) -> str | None:
 
 
 def _validate_default_probe_config(cfg: Mapping[str, object]) -> None:
-    """Reject silent drift from the configured default MLP protocol."""
+    """Reject drift from either explicitly supported QA probe protocol."""
 
-    expected = {
-        "structure": "Linear-BatchNorm-ReLU-Dropout",
+    common = {
         "activation": "relu",
-        "batch_norm": True,
         "initialization": "kaiming_uniform_relu",
         "output_dim": 1,
         "optimizer": "adam",
@@ -482,13 +485,40 @@ def _validate_default_probe_config(cfg: Mapping[str, object]) -> None:
         "scheduler_monitor": "train_loss",
         "early_stopping_monitor": "train_loss",
         "checkpoint_selection": "minimum_train_loss",
-        "feature_normalization": "none",
     }
-    mismatches = {
-        key: {"expected": value, "found": cfg.get(key)}
-        for key, value in expected.items()
-        if key in cfg and cfg.get(key) != value
-    }
+    profiles = (
+        {
+            **common,
+            "structure": "Linear-BatchNorm-ReLU-Dropout",
+            "batch_norm": True,
+            "feature_normalization": "none",
+        },
+        {
+            **common,
+            "structure": "Linear-ReLU-Dropout",
+            "batch_norm": False,
+            "feature_normalization": "train_zscore",
+        },
+    )
+    supported = any(
+        all(key not in cfg or cfg.get(key) == value for key, value in profile.items())
+        for profile in profiles
+    )
+    mismatches = {}
+    if not supported:
+        mismatches["probe_profile"] = {
+            "expected": [
+                {
+                    key: profile[key]
+                    for key in ("structure", "batch_norm", "feature_normalization")
+                }
+                for profile in profiles
+            ],
+            "found": {
+                key: cfg.get(key)
+                for key in ("structure", "batch_norm", "feature_normalization")
+            },
+        }
     reporting = tuple(
         str(value)
         for value in cfg.get(
@@ -542,17 +572,27 @@ def train_one_seed(
 
     _seed_everything(seed)
     _validate_default_probe_config(cfg)
-    # The requested default uses network-internal BatchNorm and no separate
-    # z-score preprocessing. Keep identity arrays in the checkpoint so older
-    # inference consumers that expect mean/std remain compatible.
-    mean = np.zeros(X_train.shape[1], dtype=np.float32)
-    std = np.ones(X_train.shape[1], dtype=np.float32)
+    normalization = str(cfg.get("feature_normalization", "none"))
+    if normalization == "train_zscore":
+        mean = X_train.mean(axis=0, dtype=np.float64).astype(np.float32)
+        std = X_train.std(axis=0, dtype=np.float64).astype(np.float32)
+        std = np.maximum(std, np.float32(1.0e-12))
+        X_train = ((X_train - mean) / std).astype(np.float32, copy=False)
+        X_test = ((X_test - mean) / std).astype(np.float32, copy=False)
+    elif normalization == "none":
+        mean = np.zeros(X_train.shape[1], dtype=np.float32)
+        std = np.ones(X_train.shape[1], dtype=np.float32)
+    else:
+        raise ValueError(
+            "feature_normalization must be 'none' or 'train_zscore'"
+        )
 
     chosen_device = device or ("cuda" if torch.cuda.is_available() else "cpu")
     model = QAProbe(
         X_train.shape[1],
         tuple(cfg.get("hidden_sizes", [128, 64, 32])),
         float(cfg.get("dropout", 0.3)),
+        batch_norm=bool(cfg.get("batch_norm", True)),
     ).to(chosen_device)
     loss_fn = nn.BCEWithLogitsLoss()
     optimizer = torch.optim.Adam(
@@ -572,7 +612,10 @@ def train_one_seed(
         batch_size=int(cfg.get("batch_size", 256)),
         shuffle=True,
         generator=generator,
-        drop_last=(len(X_train) % int(cfg.get("batch_size", 256)) == 1),
+        drop_last=(
+            bool(cfg.get("drop_last", True))
+            and len(X_train) % int(cfg.get("batch_size", 256)) == 1
+        ),
     )
     history = []
     maximum_epochs = int(
@@ -662,7 +705,7 @@ def train_one_seed(
         "input_dim": int(X_train.shape[1]),
         "best_epoch": int(best_epoch),
         "best_train_loss": float(best_train_loss),
-        "feature_normalization": "none",
+        "feature_normalization": normalization,
     })
     result = {
         "feature_set": feature_set,
@@ -721,7 +764,7 @@ def train_one_seed(
         "checkpoint_selection": "minimum_train_loss",
         "threshold_selection": "train_f1",
         "threshold_reporting": ["fixed_0.5", "train_f1"],
-        "feature_normalization": "none",
+        "feature_normalization": normalization,
     }
     _atomic_json(checkpoint_dir / "result.json", result)
     return result

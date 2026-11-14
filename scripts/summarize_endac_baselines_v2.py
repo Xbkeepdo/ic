@@ -119,7 +119,9 @@ def main() -> None:
             "## TokenGrounding 设置",
             "",
             "- 单一特征为 `concat(ads_per_layer, cgc_per_layer)`。",
-            "- 独立一层 MLP：hidden width 248；不与用户方法拼接。",
+            "- 按原仓库分别网格搜索 XGBoost、Random Forest 和 sklearn MLP，并分别报告三种检测器。",
+            "- 参数选择使用仓库定义的 Real-F1；严格 8:2 无验证集时只在 outer-train 上选择，不读取 test。",
+            "- 不与用户方法拼接。",
         ]
     )
     path = OUTPUT / "complete_results.md"

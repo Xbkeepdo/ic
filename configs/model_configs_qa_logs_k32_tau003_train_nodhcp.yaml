@@ -1,0 +1,17 @@
+# Training-only overlay for the formal Log-S QA benchmark.
+# It deliberately excludes DHCP and does not alter the extraction artifacts.
+extends: model_configs_qa_logs_k32_tau003.yaml
+
+qa_benchmarks:
+  extraction_mode: "all"
+
+training:
+  baseline:
+    trainers: ["native_paper"]
+    methods:
+      - "metatoken"
+      - "svar"
+      - "projectaway"
+      - "token_grounding"
+      - "instruct_lens"
+    seeds: [43, 44, 45]

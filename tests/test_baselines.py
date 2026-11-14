@@ -19,6 +19,7 @@ from detection.baselines import (
     DHCPMLP,
     SVARMLP,
     build_metatoken_classifier,
+    build_token_grounding_classifier,
     evaluate_detection_scores,
     evaluate_hallucination_scores,
     raw_labels_to_hallucination_targets,
@@ -409,6 +410,7 @@ class BaselineFeatureTests(unittest.TestCase):
                 ref2 = writer.add(first + 2)
             self.assertNotEqual(ref0.shard, ref2.shard)
             np.testing.assert_array_equal(reader.load(ref2), (first + 2).astype(np.float16))
+            self.assertFalse(os.path.exists(os.path.join(directory, "manifest.json")))
 
     def test_projectaway_chunked_softmax_is_exact(self):
         hidden = torch.tensor(
@@ -523,10 +525,39 @@ class BaselineDetectorTests(unittest.TestCase):
         self.assertEqual(real_metrics["hallucination_positive"]["f1"], 1.0)
 
     def test_metatoken_classifier_paper_hyperparameters(self):
-        lr = build_metatoken_classifier("lr").named_steps["classifier"]
+        default = build_metatoken_classifier("lr")
+        lr = default.named_steps["classifier"]
         gb = build_metatoken_classifier("gb").named_steps["classifier"]
+        no_standardization = build_metatoken_classifier(
+            "lr", standardize=False
+        )
         self.assertEqual(lr.solver, "lbfgs")
         self.assertEqual(gb.n_estimators, 100)
+        self.assertIn("standardize", default.named_steps)
+        self.assertNotIn("standardize", no_standardization.named_steps)
+
+    def test_token_grounding_repository_classifier_families(self):
+        rf = build_token_grounding_classifier(
+            "rf", {"max_depth": 20, "n_estimators": 200}, seed=7
+        )
+        mlp = build_token_grounding_classifier(
+            "mlp",
+            {
+                "hidden_layer_sizes": [64],
+                "learning_rate_init": 0.01,
+                "solver": "sgd",
+                "max_iter": 500,
+            },
+            seed=7,
+        )
+        self.assertEqual(rf.max_depth, 20)
+        self.assertEqual(rf.n_estimators, 200)
+        self.assertEqual(rf.random_state, 7)
+        self.assertEqual(mlp.hidden_layer_sizes, (64,))
+        self.assertEqual(mlp.learning_rate_init, 0.01)
+        self.assertEqual(mlp.solver, "sgd")
+        self.assertEqual(mlp.max_iter, 500)
+        self.assertEqual(mlp.random_state, 7)
 
 
 if __name__ == "__main__":

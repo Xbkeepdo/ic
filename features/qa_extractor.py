@@ -9,6 +9,7 @@ import os
 import pickle
 import tempfile
 import traceback
+from dataclasses import replace
 from pathlib import Path
 from typing import Any, Iterable, Mapping
 
@@ -30,6 +31,12 @@ from features.extractor import (
     _compute_dgst_t_result,
     build_extraction_requirements,
 )
+from features.qa_baseline import (
+    baseline_record_for_position,
+    compose_positioned_baseline_record,
+    qa_label_for_protocol,
+)
+from features.pickle_journal import AppendPickleJournal, iter_pickle_records
 from models.base_wrapper import PromptTargetRequest
 
 
@@ -62,40 +69,65 @@ class JSONLCheckpointStore:
 
 
 class AtomicFeatureShards:
-    """Resume-safe feature shards plus the required consolidated features.pkl."""
+    """One resume-safe append journal per card plus consolidated features.pkl."""
 
-    def __init__(self, output_dir: str, shard_size: int = 25):
+    def __init__(
+        self,
+        output_dir: str,
+        shard_size: int = 25,
+        *,
+        part_prefix: str = "part",
+        isolated_resume: bool = False,
+    ):
         self.output_dir = Path(output_dir)
         self.parts_dir = self.output_dir / "features.parts"
         self.parts_dir.mkdir(parents=True, exist_ok=True)
-        self.shard_size = max(1, int(shard_size))
+        self.sync_every = max(1, int(shard_size))
         self.rows: dict[str, dict] = {}
-        self.pending: list[dict] = []
-        for path in sorted(self.parts_dir.glob("part-*.pkl")):
-            with open(path, "rb") as handle:
-                for row in pickle.load(handle):
-                    self.rows[row["key"]] = row
-        self.next_part = len(list(self.parts_dir.glob("part-*.pkl")))
+        self.part_prefix = str(part_prefix).strip()
+        if not self.part_prefix or any(
+            character
+            not in "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_"
+            for character in self.part_prefix
+        ):
+            raise ValueError(f"Invalid QA feature shard prefix: {part_prefix!r}")
+        self.journal_path = self.parts_dir / f"{self.part_prefix}.pkl"
+        existing_paths = sorted(self.parts_dir.glob("part*.pkl"))
+        if isolated_resume:
+            stable_path = self.parts_dir / "part.pkl"
+            existing_paths = [
+                path
+                for path in existing_paths
+                if path == stable_path or path == self.journal_path
+            ]
+        for path in existing_paths:
+            for row in iter_pickle_records(
+                path,
+                repair_trailing_record=(path == self.journal_path),
+            ):
+                self.rows[row["key"]] = row
+        self.journal = AppendPickleJournal(
+            self.journal_path,
+            resume=True,
+            sync_every=self.sync_every,
+            recover=False,
+        )
 
     def add(self, row: dict) -> None:
         if row["key"] in self.rows:
             return
         self.rows[row["key"]] = row
-        self.pending.append(row)
-        if len(self.pending) >= self.shard_size:
-            self.flush()
+        self.journal.append(row)
 
     def flush(self) -> None:
-        if not self.pending:
-            return
-        path = self.parts_dir / f"part-{self.next_part:06d}.pkl"
-        _atomic_pickle(path, self.pending)
-        self.next_part += 1
-        self.pending = []
+        self.journal.flush()
 
     def consolidate(self) -> None:
         self.flush()
         _atomic_pickle(self.output_dir / "features.pkl", list(self.rows.values()))
+
+    def close(self) -> None:
+        self.journal.close()
 
 
 def qa_prompt(model_key: str, question: str) -> str:
@@ -241,6 +273,11 @@ def extract_questions(
     ads_cgc_enabled: bool = True,
     baseline_consumers: Mapping[str, Mapping[str, Any]] | None = None,
     generations_path: str | Path | None = None,
+    validate_fingerprints: bool = True,
+    feature_part_prefix: str = "part",
+    isolated_resume: bool = False,
+    failures_path: str | Path | None = None,
+    consolidate: bool = True,
 ) -> list[dict]:
     """Extract every enabled QA family at the configured VQA positions.
 
@@ -283,8 +320,19 @@ def extract_questions(
     generation_file = Path(generations_path or output / "generations.jsonl")
     generations = {row["key"]: row for row in load_jsonl(generation_file)}
     labels = {row["key"]: row for row in load_jsonl(output / "labels.jsonl")}
-    shards = AtomicFeatureShards(output_dir, shard_size) if root_enabled else None
-    failures = JSONLCheckpointStore(str(output / "extraction_failures.jsonl"), 1)
+    shards = (
+        AtomicFeatureShards(
+            output_dir,
+            shard_size,
+            part_prefix=feature_part_prefix,
+            isolated_resume=isolated_resume,
+        )
+        if root_enabled
+        else None
+    )
+    failures = JSONLCheckpointStore(
+        str(failures_path or output / "extraction_failures.jsonl"), 1
+    )
 
     for question in tqdm(questions, desc="Extract QA features"):
         key = question["key"]
@@ -293,9 +341,19 @@ def extract_questions(
         if generation is None or label_row is None:
             continue
         prompt = qa_prompt(model_key, question["question"])
-        generation_fingerprint = qa_generation_fingerprint(generation, prompt)
-        label_fingerprint = qa_label_fingerprint(label_row)
-        question_input_fingerprint = qa_question_input_fingerprint(question, prompt)
+        generation_fingerprint = (
+            qa_generation_fingerprint(generation, prompt)
+            if validate_fingerprints
+            else None
+        )
+        label_fingerprint = (
+            qa_label_fingerprint(label_row) if validate_fingerprints else None
+        )
+        question_input_fingerprint = (
+            qa_question_input_fingerprint(question, prompt)
+            if validate_fingerprints
+            else None
+        )
         root_pending = bool(root_enabled)
         if shards is not None and key in shards.rows:
             existing = shards.rows[key]
@@ -305,22 +363,35 @@ def extract_questions(
                     f"Cannot resume {key} from schema {existing_schema!r}; "
                     f"use a new output directory for {QA_FEATURE_SCHEMA_VERSION}."
                 )
-            if existing.get("generation_fingerprint") != generation_fingerprint:
+            if (
+                validate_fingerprints
+                and existing.get("generation_fingerprint") != generation_fingerprint
+            ):
                 raise RuntimeError(
                     f"Cannot resume {key}: generation/prompt fingerprint changed; "
                     "use a new output directory or remove this experiment output."
                 )
-            if existing.get("label_fingerprint") != label_fingerprint:
+            if (
+                validate_fingerprints
+                and existing.get("label_fingerprint") != label_fingerprint
+            ):
                 raise RuntimeError(
                     f"Cannot resume {key}: QA labels changed; use a new output "
                     "directory or remove this experiment output."
                 )
-            if existing.get("question_input_fingerprint") != question_input_fingerprint:
+            if (
+                validate_fingerprints
+                and existing.get("question_input_fingerprint")
+                != question_input_fingerprint
+            ):
                 raise RuntimeError(
                     f"Cannot resume {key}: question, image, or split changed; use "
                     "a new output directory or remove this experiment output."
                 )
-            if existing.get("extraction_fingerprint") != extraction_fingerprint:
+            if (
+                validate_fingerprints
+                and existing.get("extraction_fingerprint") != extraction_fingerprint
+            ):
                 raise RuntimeError(
                     f"Cannot resume {key}: model or extraction configuration changed; "
                     "use a new output directory or remove this experiment output."
@@ -352,11 +423,28 @@ def extract_questions(
             adapter = consumer["adapter"]
             store = consumer["store"]
             label = adapter.label_protocol
-            from features.qa_baseline import qa_label_for_protocol
-
             if qa_label_for_protocol(label_row, label) is None:
                 continue
-            if key not in store.rows:
+            existing_baseline = store.rows.get(key)
+            needs_object_baseline = bool(
+                object_position_enabled
+                and str(question.get("object_span_status") or "") == "found"
+            )
+            baseline_complete = bool(
+                existing_baseline is not None
+                and baseline_record_for_position(
+                    existing_baseline, "prompt_last_token"
+                )
+                is not None
+                and (
+                    not needs_object_baseline
+                    or baseline_record_for_position(
+                        existing_baseline, "question_object_pre_token"
+                    )
+                    is not None
+                )
+            )
+            if not baseline_complete:
                 pending_baselines[protocol] = consumer
         if not root_pending and not pending_baselines:
             continue
@@ -403,14 +491,28 @@ def extract_questions(
             with Image.open(question["image_path"]) as raw_image:
                 image = raw_image.convert("RGB")
 
-            requirements = build_extraction_requirements(
+            root_requirements = build_extraction_requirements(
                 method=bool(method_enabled and root_pending),
                 ads_cgc=bool(ads_cgc_enabled and root_pending),
                 baseline=False,
             )
+            prompt_last_requirements = root_requirements
             for consumer in pending_baselines.values():
-                requirements = requirements.merged(
+                prompt_last_requirements = prompt_last_requirements.merged(
                     consumer["adapter"].requirements
+                )
+            object_requirements = root_requirements
+            for consumer in pending_baselines.values():
+                # Object-position MetaToken uses the actual contextual target
+                # row logits.  It does not need a generated-response hidden
+                # pass, but the other five paper baselines retain their native
+                # attention/hidden-state requirements.
+                object_requirements = object_requirements.merged(
+                    replace(
+                        consumer["adapter"].requirements,
+                        logits=True,
+                        response_hidden_states=False,
+                    )
                 )
             prompt_last_outputs = model_wrapper.extract_token_features_batch(
                 image=image,
@@ -419,7 +521,7 @@ def extract_questions(
                 target_token_ids=[prompt_last_target_token_id],
                 cfg_dgst_t=(cfg_dgst_t if method_enabled and root_pending else None),
                 prompt=prompt,
-                requirements=requirements,
+                requirements=prompt_last_requirements,
             )
             if len(prompt_last_outputs) != 1:
                 raise RuntimeError(
@@ -444,24 +546,48 @@ def extract_questions(
                     },
                 )
 
+            positioned_baselines: dict[str, dict[str, dict]] = {}
+            prompt_template: dict[str, Any] | None = None
+            prompt_template_methods: tuple[str, ...] | None = None
             for protocol, consumer in pending_baselines.items():
                 cache_ids = consumer.get("cache_ids") or {}
-                baseline_record = consumer["adapter"].build_record(
-                    image=image,
-                    question=question,
-                    generation=generation,
-                    label_row=label_row,
-                    response_token_ids=response_ids,
-                    target_index=prompt_last_response_index,
-                    model_output=prompt_last_output,
-                    cache_id=cache_ids.get(key),
+                adapter = consumer["adapter"]
+                runtime = getattr(adapter, "runtime", None)
+                methods = tuple(getattr(runtime, "methods", ()))
+                can_reuse = (
+                    prompt_template is not None
+                    and hasattr(adapter, "relabel_record")
+                    and methods == prompt_template_methods
+                    and "halloc" not in methods
                 )
-                consumer["store"].add(baseline_record)
+                if can_reuse:
+                    baseline_record = adapter.relabel_record(
+                        prompt_template,
+                        label_row=label_row,
+                    )
+                else:
+                    baseline_record = adapter.build_record(
+                        image=image,
+                        question=question,
+                        generation=generation,
+                        label_row=label_row,
+                        response_token_ids=response_ids,
+                        target_index=prompt_last_response_index,
+                        model_output=prompt_last_output,
+                        cache_id=cache_ids.get(key),
+                        position_protocol="prompt_last_token",
+                    )
+                    if methods and "halloc" not in methods:
+                        prompt_template = baseline_record
+                        prompt_template_methods = methods
+                positioned_baselines[protocol] = {
+                    "prompt_last_token": baseline_record,
+                }
 
             if (
-                root_pending
-                and object_position_enabled
+                object_position_enabled
                 and object_status["status"] == "found"
+                and (root_pending or pending_baselines)
             ):
                 try:
                     surface = str(question["object_surface"])
@@ -481,29 +607,73 @@ def extract_questions(
                     object_output = model_wrapper.extract_prompt_target_features(
                         image=image,
                         request=request,
-                        cfg_dgst_t=(cfg_dgst_t if method_enabled else None),
-                        requirements=requirements,
+                        cfg_dgst_t=(
+                            cfg_dgst_t
+                            if method_enabled and root_pending
+                            else None
+                        ),
+                        requirements=object_requirements,
                     )
                     alignment = _prompt_alignment_metadata(object_output)
                     if "target_token_id" not in alignment:
                         raise RuntimeError(
                             "Prompt-target wrapper omitted the actual contextual target ID"
                         )
-                    positions["question_object_pre_token"] = _build_position_record(
-                        model_out=object_output,
-                        cfg_dgst_t=cfg_dgst_t,
-                        cfg_ads=cfg_ads,
-                        cfg_cgc=cfg_cgc,
-                        method_enabled=method_enabled,
-                        ads_cgc_enabled=ads_cgc_enabled,
-                        target_metadata={
-                            "protocol": "question_object_contextual_first_subtoken_v1",
-                            "surface": surface,
-                            "question_char_start": char_start,
-                            "question_char_end": char_end,
-                            **alignment,
-                        },
-                    )
+                    if root_pending:
+                        positions["question_object_pre_token"] = _build_position_record(
+                            model_out=object_output,
+                            cfg_dgst_t=cfg_dgst_t,
+                            cfg_ads=cfg_ads,
+                            cfg_cgc=cfg_cgc,
+                            method_enabled=method_enabled,
+                            ads_cgc_enabled=ads_cgc_enabled,
+                            target_metadata={
+                                "protocol": "question_object_contextual_first_subtoken_v1",
+                                "surface": surface,
+                                "question_char_start": char_start,
+                                "question_char_end": char_end,
+                                **alignment,
+                            },
+                        )
+                    object_template: dict[str, Any] | None = None
+                    object_template_methods: tuple[str, ...] | None = None
+                    for protocol, consumer in pending_baselines.items():
+                        cache_ids = consumer.get("cache_ids") or {}
+                        adapter = consumer["adapter"]
+                        runtime = getattr(adapter, "runtime", None)
+                        methods = tuple(getattr(runtime, "methods", ()))
+                        can_reuse = (
+                            object_template is not None
+                            and hasattr(adapter, "relabel_record")
+                            and methods == object_template_methods
+                            and "halloc" not in methods
+                        )
+                        if can_reuse:
+                            baseline_record = adapter.relabel_record(
+                                object_template,
+                                label_row=label_row,
+                            )
+                        else:
+                            baseline_record = adapter.build_record(
+                                image=image,
+                                question=question,
+                                generation=generation,
+                                label_row=label_row,
+                                response_token_ids=response_ids,
+                                target_index=0,
+                                model_output=object_output,
+                                cache_id=cache_ids.get(key),
+                                position_protocol="question_object_pre_token",
+                                position_target_token_id=int(
+                                    alignment["target_token_id"]
+                                ),
+                            )
+                            if methods and "halloc" not in methods:
+                                object_template = baseline_record
+                                object_template_methods = methods
+                        positioned_baselines[protocol][
+                            "question_object_pre_token"
+                        ] = baseline_record
                     object_status.update(
                         {
                             "status": "extracted",
@@ -522,6 +692,16 @@ def extract_questions(
                             "traceback": traceback.format_exc(),
                         }
                     )
+
+            for protocol, consumer in pending_baselines.items():
+                combined = compose_positioned_baseline_record(
+                    positioned_baselines[protocol]
+                )
+                store = consumer["store"]
+                if key in store.rows:
+                    store.add(combined, replace=True)
+                else:
+                    store.add(combined)
 
             if root_pending:
                 yes_only_label = label_row.get("object_hallucination_yes_only_label")
@@ -572,9 +752,15 @@ def extract_questions(
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
     if shards is not None:
-        shards.consolidate()
+        if consolidate:
+            shards.consolidate()
+        shards.close()
     for consumer in consumers.values():
-        consumer["store"].flush()
+        store = consumer["store"]
+        if hasattr(store, "close"):
+            store.close()
+        else:
+            store.flush()
     failures.flush()
     return list(shards.rows.values()) if shards is not None else []
 
@@ -699,6 +885,60 @@ def find_answer_semantic_token(response_ids: list[int], tokenizer, answer: str |
 
 def _compact_dgst(result: dict) -> dict:
     """Serialize every active VV/VP/VPend DGST scope without aliases."""
+
+    if result.get("logs_profile") == "logs_risk_f_log_hpre_v1":
+        risk = _as_float32_array(result["logs_risk_per_layer"])
+        f_log = _as_float32_array(result["f_log_per_layer"])
+        support_sizes = np.asarray(
+            result["logs_union_support_size_per_layer"], dtype=np.int16
+        )
+        if risk.ndim != 1 or f_log.shape != risk.shape:
+            raise ValueError("Log-S risk and F_log must be equal-length vectors")
+        if support_sizes.shape != risk.shape:
+            raise ValueError("Log-S support size must have one value per layer")
+        metadata_keys = (
+            "logs_profile",
+            "logs_tau",
+            "logs_transport_top_k",
+            "logs_source_top_k",
+            "logs_target_top_k",
+            "logs_ot_solver",
+            "logs_state",
+            "logs_semantic_probability",
+            "logs_semantic_transform",
+            "logs_source_distribution",
+            "logs_target_distribution",
+            "logs_support",
+            "logs_cost",
+            "logs_f_log_definition",
+            "logs_visual_token_count",
+        )
+        missing = [key for key in metadata_keys if key not in result]
+        if missing:
+            raise KeyError(f"Missing Log-S/F_log metadata: {missing}")
+        return {
+            "schema_version": "logs-risk-f-log-hpre-v1",
+            "logs_risk": risk,
+            "f_log": f_log,
+            **{
+                name: _as_float32_array(result[source])
+                for name, source in (
+                    ("e_sum", "semantic_sum_per_layer"),
+                    ("e_mean", "semantic_mean_per_layer"),
+                    ("i_sum", "visual_write_sum_per_layer"),
+                )
+                if source in result
+            },
+            "logs_risk_f_log": np.concatenate((risk, f_log)).astype(
+                np.float32, copy=False
+            ),
+            "metadata": {
+                **{key: result[key] for key in metadata_keys},
+                "logs_union_support_size_per_layer": support_sizes,
+                "feature_order": "concat(logs_risk,f_log)",
+                "feature_dim": int(risk.size + f_log.size),
+            },
+        }
 
     methods = tuple(str(value) for value in result.get("dgst_t_four_gate_methods") or ())
     if not methods:

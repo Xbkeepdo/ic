@@ -1,0 +1,6 @@
+extends: model_configs_qa_logs_k32_tau003.yaml
+
+qa_benchmarks:
+  extraction_mode: "method_only"
+  position_protocols:
+    - "prompt_last_token"

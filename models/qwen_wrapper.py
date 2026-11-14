@@ -238,7 +238,12 @@ class QwenVLWrapper(BaseLVLMWrapper):
         compact_profile = bool(
             cfg_dgst_t is not None
             and cfg_dgst_t.get("feature_output_profile")
-            in {"costvariant_vv", "gate_comparison_vv", "four_gate_vv"}
+            in {
+                "costvariant_vv",
+                "gate_comparison_vv",
+                "four_gate_vv",
+                "logs_risk_f_log_hpre",
+            }
         )
         keep_attention = (
             (not compact_profile or requirements_were_explicit)

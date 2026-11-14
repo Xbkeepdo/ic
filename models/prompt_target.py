@@ -20,11 +20,16 @@ from models.base_wrapper import (
     ModelOutput,
     PromptTargetAlignment,
     PromptTargetRequest,
+    compact_response_logit_statistics,
 )
 from models.dgst_capture import (
+    final_normalized_hidden_slice,
     hidden_states_from_captures,
     hidden_states_from_layer_outputs,
     merged_position_for_tokenized_position,
+    positions_hidden_states_from_captures,
+    positions_hidden_states_from_layer_outputs,
+    resolve_prompt_positions,
     run_forward_with_dgst_captures,
     run_forward_with_layer_hidden_captures,
 )
@@ -239,6 +244,7 @@ def extract_prompt_target_from_inputs(
             capture_all_layers=(
                 resolved_requirements.token_hidden_states
                 or resolved_requirements.patch_hidden_states
+                or resolved_requirements.instruction_hidden_states
             ),
             **prefix_inputs,
         )
@@ -270,7 +276,12 @@ def extract_prompt_target_from_inputs(
     compact_profile = bool(
         cfg_dgst_t is not None
         and cfg_dgst_t.get("feature_output_profile")
-        in {"costvariant_vv", "gate_comparison_vv", "four_gate_vv"}
+        in {
+            "costvariant_vv",
+            "gate_comparison_vv",
+            "four_gate_vv",
+            "logs_risk_f_log_hpre",
+        }
     )
     keep_attention = (
         (not compact_profile or requirements_were_explicit)
@@ -339,11 +350,84 @@ def extract_prompt_target_from_inputs(
     token_hidden_states = token_hidden_states.cpu()
     patch_hidden_states = patch_hidden_states.cpu()
 
+    baseline_capture: dict[str, Any] = {
+        "prompt_target": True,
+        "target_token_id": int(alignment.target_token_id),
+        "target_tokenized_position": int(alignment.target_tokenized_position),
+        "target_expanded_position": int(alignment.target_expanded_position),
+        "prediction_position": int(prediction_position),
+        "visual_start": int(visual_start),
+        "visual_end": int(visual_end),
+        "attention_requirement": resolved_requirements.attention.value,
+    }
+    if resolved_requirements.instruction_hidden_states:
+        prompt_positions = resolve_prompt_positions(
+            full_input_ids=prefix_ids,
+            prompt_tokenized_length=len(prefix_ids),
+            image_token_id=int(image_token_id),
+            visual_start=int(visual_start),
+            visual_end=int(visual_end),
+        )
+        instruction_positions = [
+            position for position in prompt_positions if position >= int(visual_end)
+        ]
+        if len(instruction_positions) < 4:
+            raise RuntimeError(
+                "Instruction Lens requires at least four post-visual prompt tokens"
+            )
+        if captures is not None:
+            instruction_states = positions_hidden_states_from_captures(
+                captures,
+                positions=instruction_positions,
+            )
+        elif layer_outputs is not None:
+            instruction_states = positions_hidden_states_from_layer_outputs(
+                layer_outputs,
+                positions=instruction_positions,
+            )
+        elif out.hidden_states is not None:
+            instruction_states = torch.stack(
+                [
+                    state[0, instruction_positions, :]
+                    for state in out.hidden_states[1:]
+                ],
+                dim=0,
+            )
+        else:
+            raise RuntimeError(
+                "Instruction Lens requested but instruction states were not captured"
+            )
+        object_state = final_normalized_hidden_slice(
+            model=wrapper.model,
+            out=out,
+            dgst_captures=captures,
+            layer_outputs=layer_outputs,
+            start=prediction_position,
+            end=prediction_position + 1,
+        )[0]
+        layer_count = int(instruction_states.shape[0])
+        baseline_capture.update(
+            {
+                "instruct_lens_instruction_hidden_states": instruction_states.cpu(),
+                "instruct_lens_object_hidden_state": object_state.cpu(),
+                "instruct_lens_visual_layer": round(0.75 * layer_count) - 1,
+                "instruct_lens_instruction_layer": round(0.69 * layer_count) - 1,
+                "instruct_lens_object_layer": layer_count,
+            }
+        )
+
     row_logits = out.logits[0, prediction_position]
     pred_token_id = int(row_logits.argmax().item())
     token_logits = (
         row_logits.float().cpu() if resolved_requirements.logits else None
     )
+    if resolved_requirements.logits:
+        baseline_capture.update(
+            compact_response_logit_statistics(
+                row_logits.unsqueeze(0),
+                response_token_ids=[int(alignment.target_token_id)],
+            )
+        )
     pred_token_str = wrapper.tokenizer.decode(
         [pred_token_id],
         skip_special_tokens=False,
@@ -401,14 +485,7 @@ def extract_prompt_target_from_inputs(
         visual_grid=visual_grid if resolved_requirements.visual_layout else None,
         response_hidden_states=None,
         baseline_capture={
-            "prompt_target": True,
-            "target_token_id": int(alignment.target_token_id),
-            "target_tokenized_position": int(alignment.target_tokenized_position),
-            "target_expanded_position": int(alignment.target_expanded_position),
-            "prediction_position": int(prediction_position),
-            "visual_start": int(visual_start),
-            "visual_end": int(visual_end),
-            "attention_requirement": resolved_requirements.attention.value,
+            **baseline_capture,
             "prompt_target_alignment": {
                 "target_tokenized_position": int(alignment.target_tokenized_position),
                 "target_expanded_position": int(alignment.target_expanded_position),

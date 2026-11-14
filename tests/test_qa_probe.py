@@ -108,6 +108,23 @@ def test_feature_vectors_have_expected_blocks():
     ).shape == (1,)
 
 
+def test_logs_risk_f_log_vector_is_available_at_both_qa_positions():
+    current = _current_row()
+    for position in current["positions"].values():
+        position["dgst"]["logs_risk_f_log"] = np.asarray(
+            [0.1, 0.2, 1.1, 1.2], dtype=np.float32
+        )
+
+    np.testing.assert_allclose(
+        feature_vector(current, "logs_risk_f_log@prompt_last_token"),
+        [0.1, 0.2, 1.1, 1.2],
+    )
+    np.testing.assert_allclose(
+        feature_vector(current, "logs_risk_f_log@question_object_pre_token"),
+        [0.1, 0.2, 1.1, 1.2],
+    )
+
+
 def test_yes_only_protocol_filters_non_yes_rows():
     real = _current_row()
     hallucination = {

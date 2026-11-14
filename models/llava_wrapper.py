@@ -1264,7 +1264,12 @@ def _is_compact_profile(cfg_dgst_t: Optional[dict]) -> bool:
     return bool(
         cfg_dgst_t is not None
         and cfg_dgst_t.get("feature_output_profile")
-        in {"costvariant_vv", "gate_comparison_vv", "four_gate_vv"}
+        in {
+            "costvariant_vv",
+            "gate_comparison_vv",
+            "four_gate_vv",
+            "logs_risk_f_log_hpre",
+        }
     )
 
 

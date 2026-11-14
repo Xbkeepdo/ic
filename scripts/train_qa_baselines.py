@@ -25,8 +25,10 @@ from features.qa_baseline import (  # noqa: E402
     DEFAULT_QA_LABEL_PROTOCOL,
     QA_BASELINE_PROTOCOL,
     QA_LABEL_PROTOCOLS,
+    QA_BASELINE_POSITIONS,
     QA_SPLITS,
     build_qa_probe_split_manifest,
+    baseline_record_for_position,
     normalize_qa_label_protocol,
     split_qa_baseline_records,
     validate_halloc_cache_uniqueness,
@@ -85,6 +87,11 @@ def parse_args() -> argparse.Namespace:
         choices=QA_LABEL_PROTOCOLS,
         default=DEFAULT_QA_LABEL_PROTOCOL,
     )
+    parser.add_argument(
+        "--position",
+        choices=QA_BASELINE_POSITIONS,
+        default="prompt_last_token",
+    )
     parser.add_argument("--methods", nargs="+", default=None)
     parser.add_argument("--seeds", nargs="+", type=int, default=None)
     trainer_group = parser.add_mutually_exclusive_group()
@@ -125,6 +132,7 @@ def main() -> None:
             "QA baseline training requires training.threshold_selection=train_f1"
         )
     label_protocol = normalize_qa_label_protocol(args.label_protocol)
+    position = str(args.position)
     qa_cfg = config.get("qa_benchmarks") or {}
     output_root = args.output_root or qa_cfg.get("output_root")
     if not output_root:
@@ -136,7 +144,7 @@ def main() -> None:
     baseline_dir = run_dir / "baseline" / label_protocol
     feature_path = baseline_dir / "features.pkl"
     manifest_path = baseline_dir / MANIFEST_NAME
-    split_path = baseline_dir / SPLIT_MANIFEST_NAME
+    split_path = baseline_dir / f"probe_splits.{position}.json"
     manifest = (
         _load_json_object(manifest_path) if manifest_path.is_file() else {}
     )
@@ -208,17 +216,26 @@ def main() -> None:
         raise ValueError(
             f"Requested QA baselines were not extracted: {sorted(unavailable)}"
         )
-    for record in records:
+    positioned_records = [
+        value
+        for record in records
+        if (value := baseline_record_for_position(record, position)) is not None
+    ]
+    if not positioned_records:
+        raise RuntimeError(
+            f"No QA baseline records found for position {position!r}"
+        )
+    for record in positioned_records:
         validate_baseline_record(record, required=methods)
-    validate_halloc_cache_uniqueness(records)
+    validate_halloc_cache_uniqueness(positioned_records)
 
     split_records = split_qa_baseline_records(
-        records,
+        positioned_records,
         label_protocol=label_protocol,
     )
     _require_both_labels(split_records)
     expected_split_manifest = build_qa_probe_split_manifest(
-        records,
+        positioned_records,
         label_protocol=label_protocol,
     )
     stored_split_manifest = _load_json_object(split_path)
@@ -249,6 +266,7 @@ def main() -> None:
         "model": args.model,
         "dataset": args.dataset,
         "label_protocol": label_protocol,
+        "position": position,
         "seeds": seeds,
         "methods": methods,
         "split_records": split_records,
@@ -270,14 +288,16 @@ def main() -> None:
             trainer_runs[trainer] = run_qa_baseline_training(
                 **common_kwargs,
                 trainer_namespace=(
-                    "native_paper" if len(trainers) > 1 else None
+                    f"native_paper_{position}"
+                    if len(trainers) > 1
+                    else position
                 ),
             )
     if len(trainer_runs) > 1:
         _write_trainer_comparison(
             result_root=baseline_dir,
             result_stem=(
-                f"{args.model}_{args.dataset}_{label_protocol}_qa_baselines"
+                f"{args.model}_{args.dataset}_{label_protocol}_{position}_qa_baselines"
             ),
             trainer_runs=trainer_runs,
             probe_cfg=dict(probe_cfg),
@@ -285,6 +305,7 @@ def main() -> None:
     print(
         f"[train_qa_baselines] Complete: {args.model}/{args.dataset}/"
         f"{label_protocol}; trainers={list(trainers)}, seeds={seeds}, "
+        f"position={position}, "
         f"methods={list(methods)}, "
         f"output={baseline_dir / 'results'}"
     )
@@ -322,10 +343,14 @@ def run_qa_shared_mlp_training(
     probe_cfg: Mapping[str, Any],
     baseline_cfg: Mapping[str, Any],
     device: str,
+    position: str = "prompt_last_token",
 ) -> tuple[dict[str, Any], list[Path]]:
     """Run the exact shared-MLP protocol used by COCO baselines."""
 
     protocol = normalize_qa_label_protocol(label_protocol)
+    position_suffix = (
+        "" if position == "prompt_last_token" else f"_{position}"
+    )
     return _run_shared_mlp_protocol(
         model=model,
         seeds=seeds,
@@ -339,9 +364,11 @@ def run_qa_shared_mlp_training(
         baseline_cfg=baseline_cfg,
         device=device,
         run_name=None,
-        result_stem=f"{model}_{dataset}_{protocol}_qa_baselines",
+        result_stem=(
+            f"{model}_{dataset}_{protocol}{position_suffix}_qa_baselines"
+        ),
         label_protocol=(
-            f"qa_{protocol}_0hall_1real_question_probe_split_"
+            f"qa_{protocol}{position_suffix}_0hall_1real_question_probe_split_"
             "physical_image_disjoint"
         ),
         write_summary=True,
@@ -514,11 +541,15 @@ def run_qa_baseline_training(
     baseline_dir: Path,
     baseline_cfg: Mapping[str, Any],
     device: str,
+    position: str = "prompt_last_token",
     trainer_namespace: str | None = None,
 ) -> tuple[dict[str, Any], list[Path]]:
     """Run native heads and write isolated per-seed plus aggregate reports."""
 
     protocol = normalize_qa_label_protocol(label_protocol)
+    position_suffix = (
+        "" if position == "prompt_last_token" else f"_{position}"
+    )
     return _run_training_protocol(
         model=model,
         seeds=seeds,
@@ -531,9 +562,11 @@ def run_qa_baseline_training(
         baseline_cfg=baseline_cfg,
         device=device,
         run_name=None,
-        result_stem=f"{model}_{dataset}_{protocol}_qa_baselines",
+        result_stem=(
+            f"{model}_{dataset}_{protocol}{position_suffix}_qa_baselines"
+        ),
         label_protocol=(
-            f"qa_{protocol}_0hall_1real_question_probe_split_"
+            f"qa_{protocol}{position_suffix}_0hall_1real_question_probe_split_"
             "physical_image_disjoint"
         ),
         write_summary=True,
