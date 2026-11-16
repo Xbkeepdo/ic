@@ -1,5 +1,9 @@
 # DGST-T
 
+The `mitigate` branch also contains generation-time hallucination mitigation
+experiments for LLaVA and Qwen3-VL. See [the mitigation code guide](docs/MITIGATION.md)
+for entrypoints, experiment snapshots, results, and protocol limitations.
+
 This directory is a TGD-style port of the DGST continuous risk feature path.
 It keeps the token-grounding-detector pipeline layout, but replaces the ADS/CGC
 object-token features with DGST-T features.

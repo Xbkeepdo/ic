@@ -196,7 +196,8 @@ def training_rows(groups: dict[str, list[dict]], method: str, *, protocol: str, 
     return result
 
 
-def fit_ours_82(rows: dict[str, list[dict]], cfg: dict, seed: int, output: Path, protocol: str) -> dict:
+def fit_ours_82(rows: dict[str, list[dict]], cfg: dict, seed: int, output: Path, protocol: str,
+                *, training_seed: int | None = None) -> dict:
     X_train = np.stack([row["positions"][ANSWER]["dgst"]["logs_risk_f_log"] for row in rows["train"]]).astype(np.float32)
     y_train = np.asarray([row["label"] for row in rows["train"]], dtype=np.int64)
     X_test = np.stack([row["positions"][ANSWER]["dgst"]["logs_risk_f_log"] for row in rows["test"]]).astype(np.float32)
@@ -207,12 +208,16 @@ def fit_ours_82(rows: dict[str, list[dict]], cfg: dict, seed: int, output: Path,
     test = ((X_test - mean) / std).astype(np.float32)
     random.seed(seed); np.random.seed(seed); torch.manual_seed(seed)
     model = QAProbe(X_train.shape[1], tuple(cfg["hidden_sizes"]), float(cfg["dropout"]), batch_norm=bool(cfg["batch_norm"]))
+    runtime_seed = seed if training_seed is None else int(training_seed)
+    if training_seed is not None:
+        # Keep minibatch order and dropout masks fixed while varying only weights.
+        random.seed(runtime_seed); np.random.seed(runtime_seed); torch.manual_seed(runtime_seed)
     optimizer = torch.optim.Adam(model.parameters(), lr=float(cfg["learning_rate"]), weight_decay=float(cfg["weight_decay"]))
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode="min", factor=float(cfg["lr_factor"]), patience=int(cfg["lr_patience"]))
     criterion = nn.BCEWithLogitsLoss()
     loader = DataLoader(TensorDataset(torch.from_numpy(train), torch.from_numpy(y_train.astype(np.float32))),
                         batch_size=int(cfg["batch_size"]), shuffle=True,
-                        generator=torch.Generator().manual_seed(seed), drop_last=False)
+                        generator=torch.Generator().manual_seed(runtime_seed), drop_last=False)
     best_loss, best_state, stale, best_epoch, history = math.inf, None, 0, 0, []
     for epoch in range(int(cfg["max_epochs"])):
         model.train(); total, count = 0.0, 0
@@ -252,6 +257,9 @@ def fit_ours_82(rows: dict[str, list[dict]], cfg: dict, seed: int, output: Path,
               "metrics": {"train": classification_metrics(y_train, train_score, threshold),
                           "test": classification_metrics(y_test, test_score, threshold)},
               "history": history}
+    if training_seed is not None:
+        report.update(initialization_seed=seed, training_random_seed=runtime_seed,
+                      seed_scope="model_initialization_only")
     (output / "result.json").write_text(json.dumps(report, indent=2) + "\n")
     return report
 

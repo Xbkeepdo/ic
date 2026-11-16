@@ -45,25 +45,42 @@ def _transport_problem(
     prediction_state: torch.Tensor,
     top_k: int,
 ) -> tuple[tuple[np.ndarray, np.ndarray, np.ndarray], float, int]:
-    from features.dgst_t import (
-        _cosine_distance_matrix,
-        _renormalize,
-        _topk_union_indices,
+    from features.dgst_t import _cosine_distance_matrix
+
+    return _transport_problem_from_costs(
+        source=source,
+        target=target,
+        visual_cost=_cosine_distance_matrix(visual_states),
+        endpoint_penalty=_visual_endpoint_penalty(prediction_state, visual_states),
+        top_k=top_k,
     )
 
-    support = _topk_union_indices(source, target, int(top_k))
-    local_source = _renormalize(source.index_select(0, support))
-    local_target = _renormalize(target.index_select(0, support))
-    visual_cost = _cosine_distance_matrix(visual_states)
-    local_cost = visual_cost.index_select(0, support).index_select(1, support)
+
+def _visual_endpoint_penalty(prediction_state: torch.Tensor, visual_states: torch.Tensor) -> torch.Tensor:
     endpoint_cosine = F.cosine_similarity(
         prediction_state.float().unsqueeze(0),
         visual_states.float(),
         dim=-1,
     )
-    endpoint_penalty = 1.0 - torch.nan_to_num(
+    return 1.0 - torch.nan_to_num(
         endpoint_cosine, nan=0.0, posinf=1.0, neginf=-1.0
     ).clamp(-1.0, 1.0)
+
+
+def _transport_problem_from_costs(
+    *,
+    source: torch.Tensor,
+    target: torch.Tensor,
+    visual_cost: torch.Tensor,
+    endpoint_penalty: torch.Tensor,
+    top_k: int,
+) -> tuple[tuple[np.ndarray, np.ndarray, np.ndarray], float, int]:
+    from features.dgst_t import _renormalize, _topk_union_indices
+
+    support = _topk_union_indices(source, target, int(top_k))
+    local_source = _renormalize(source.index_select(0, support))
+    local_target = _renormalize(target.index_select(0, support))
+    local_cost = visual_cost.index_select(0, support).index_select(1, support)
     local_penalty = endpoint_penalty.index_select(0, support)
     shift = float(
         torch.dot(local_source.double(), local_penalty.double())

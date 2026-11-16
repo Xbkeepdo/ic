@@ -156,6 +156,8 @@ def generate_questions(
     failure_file.parent.mkdir(parents=True, exist_ok=True)
     store = JSONLCheckpointStore(str(generation_file), checkpoint_every)
     failures = JSONLCheckpointStore(str(failure_file), 1)
+    cached_image_path = None
+    cached_image = None
     for question in tqdm(questions, desc="Generate yes/no"):
         key = question["key"]
         prompt = qa_prompt(model_key, question["question"])
@@ -165,8 +167,12 @@ def generate_questions(
         ):
             continue
         try:
-            with Image.open(question["image_path"]) as raw_image:
-                image = raw_image.convert("RGB")
+            image_path = str(question["image_path"])
+            if image_path != cached_image_path:
+                with Image.open(image_path) as raw_image:
+                    cached_image = raw_image.convert("RGB")
+                cached_image_path = image_path
+            image = cached_image
             generated = model_wrapper.generate(image, prompt=prompt)
             prediction = normalize_yes_no(generated.generated_text)
             semantic_index = find_answer_semantic_token(
@@ -333,6 +339,8 @@ def extract_questions(
     failures = JSONLCheckpointStore(
         str(failures_path or output / "extraction_failures.jsonl"), 1
     )
+    cached_image_path = None
+    cached_image = None
 
     for question in tqdm(questions, desc="Extract QA features"):
         key = question["key"]
@@ -488,8 +496,12 @@ def extract_questions(
         positions: dict[str, dict] = {}
 
         try:
-            with Image.open(question["image_path"]) as raw_image:
-                image = raw_image.convert("RGB")
+            image_path = str(question["image_path"])
+            if image_path != cached_image_path:
+                with Image.open(image_path) as raw_image:
+                    cached_image = raw_image.convert("RGB")
+                cached_image_path = image_path
+            image = cached_image
 
             root_requirements = build_extraction_requirements(
                 method=bool(method_enabled and root_pending),

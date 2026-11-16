@@ -1,45 +1,23 @@
 # 当前任务
 
-当前任务：无。
+发布：按用户要求创建 GitHub `Xbkeepdo/ic` 的 `mitigate` 分支，保存当前源码、配置与实验记录。独立工作区为 `../ic-mitigate-upload`，保留 `ac` 工作区和运行中的两卡实验。500 图单图启动与评估脚本、图片清单已归档在 `scripts/experiment_snapshots/qwen3_single500/`；使用说明见该分支的 `docs/MITIGATION.md`。
 
-最近完成：LLaVA/Qwen3 的 COCO4000 固定 8:2 EMS 来源向量四组对照。CUDA 重训原版三种子的测试指标与历史 test_grid 完全一致；完整结果见[报告](../outputs/log_s_p_source_vector_ablation_82_fixed_split/complete_results.md)与[归档](archive/CURRENT_TASK_log_s_p_source_vector_ablation_fixed_82_20261115.md)。
+进行中：用户已要求单图推理复验。Qwen3 的原 SVAR 与 SVAR＋SAR/EMS 在原固定 500 张图上以 batch size 1 生成，两卡各处理 250 张。使用项目提示词 `Describe this image.`、BF16、greedy、512 token 上限，聚合原随机顺序的 100／200／300／400／500 子集。新输出根目录为服务器 `outputs/generation_time_evidence_drift_qwen3_single500/`，完整生成后自动评分。
 
-最近完成：LLaVA 和 Qwen3 的 COCO4000 固定 8:1:1 图片划分源向量对照；种子 43/44/45 沿用原训练器控制初始化与训练随机性。见[结果](../outputs/log_s_p_source_vector_ablation_811_fixed_split/complete_results.md)及[归档](archive/CURRENT_TASK_log_s_p_source_vector_ablation_fixed_811_20261115.md)。
+最近完成：Qwen3 的 SVAR＋SAR/EMS 后层注意力扩至原 COCO 500 图，复用原批次和 SVAR 缓存。首批逐 token 一致、全部逐图批次匹配。CHAIRs/i 从 40.80%／9.03% 升到 41.20%／9.39%，F1 从 77.43% 降到 76.78%，幻觉提及 361→374，修复 21 张、新增 23 张。差值区间跨零，共同未触顶 493 图同方向。新臂未在 500 图上改善原 SVAR。[完整结果](archive/QWEN3_SADI_SAR_EMS_COCO500_20261116.md)，服务器主评分为 `outputs/generation_time_evidence_drift_qwen3_coco500/coco500/metrics.first500.svar-svar_sar_ems_attention.json`。
 
-最近完成：同批 LLaVA 种子 43 的 100 图试验 SAR 注意力＋EMS FFN 联合干预的 FFN 纯视觉贡献版；SAR 注意力改写和最多 64 轮复检保持不变。34 图未触发而复用，66 图重跑；CHAIRs 仍为 30%，幻觉提及仍为 41 次，CHAIRi 8.04%→7.95% 仅因物体提及分母增加，物体召回 73.24%→73.18%；回滚 527→575 次。见[报告](../outputs/generation_time_sar_ems_joint_loop_fused_64_vis_ffn_seed43/summary.md)及[归档](archive/CURRENT_TASK_generation_time_sar_ems_joint_loop_fused_64_vis_ffn_seed43_20261115.md)。
+最近完成：解释 SADI 与 SAR/EMS 后层改造，并起草含 COCO 500 图指标的英文 rebuttal。Qwen3 的 SVAR＋同后层配方完成原随机顺序前 100 图配对，CHAIRs/i 从 44.00%／10.44% 降到 40.00%／9.28%，F1 从 75.57% 升到 76.38%，幻觉提及 79→68，修复 8 张、新增 4 张。差值区间均跨零。两卡两组在相同新批次重新生成，200 条描述与逐图评分通过核对。[完整结果](archive/QWEN3_SVAR_SAR_EMS_COCO100_20261117.md)，服务器产物在 `outputs/generation_time_evidence_drift_qwen3_svar100/`。
 
-最近完成：同批 LLaVA 种子 43 的 100 图把共享前向＋前缀预填充联合干预的复检上限从 32 提至 64。96 图沿用已清空结果，4 图重跑且前 32 次动作一致，最终 100 图检测器清空。CHAIRs 31%→30%，CHAIRi 8.72%→8.04%，物体召回保持 73.24%，多 32 次回滚，逐图耗时合计约多 51.70 秒；仍有 30 图被 CHAIR 判为含幻觉。见[报告](../outputs/generation_time_sar_ems_joint_loop_fused_64_seed43/summary.md)及[归档](archive/CURRENT_TASK_generation_time_sar_ems_joint_loop_fused_64_seed43_20261115.md)。
+最近完成：Qwen3-VL 的 SADI＋SAR/EMS 原后层配方在新增 COCO 500 图上的复验。三组同图批量解码和逐图评分已核对。后层版／SADI／SVAR 的 CHAIRs 分别为 26.00%／26.60%／40.80%，CHAIRi 为 5.01%／5.58%／9.03%。按原随机顺序复用逐图评分，已核对 200、300、400、500 张嵌套子集。后层版相对 SADI 的 CHAIR 差值区间在四档均跨零，第 376 张决定了 400、500 张上的 CHAIRi 差值方向。后层版相对 SVAR 的全量召回和 F1 低 8.85／5.16 个百分点。见[完整结果](archive/QWEN3_SADI_SAR_EMS_COCO500_20261116.md)，产物在服务器 `outputs/generation_time_evidence_drift_qwen3_coco500/`。
 
-最近完成：前缀预填充基础上实现检测与干预规划共用一次完整 caption 捕获前向；同批 LLaVA 种子 43 的 100 图逐图耗时 1082.98→843.68 秒，相比最初逐 token 重放的 2032.97 秒下降 58.5%。初始触发状态 100/100 一致、66 张触发图的首风险词分数一致、首次 FFN 三层集合 99/100 一致、最终 caption 与前缀版 94/100 逐 token 相同；新变体 CHAIRs 31%、CHAIRi 8.72%、检测器清空 96 图。存在浮点路径差异，非严格等价。见[报告](../outputs/generation_time_sar_ems_joint_loop_fused_seed43/summary.md)及[归档](archive/CURRENT_TASK_generation_time_sar_ems_joint_loop_fused_seed43_20261115.md)。
+最近完成：Qwen3-VL 的 VQA 幻觉缓解。POPE 600、AMBER existence 987 题，原 caption 版 SAR/EMS 两组均触发 0 次，输出逐 token 等于 SADI。问题实体适配版触发 572／948 题，POPE 答案全相同、误报 23／300，AMBER 只新增 1 个错误 Yes（SADI 79／987，适配 80／987，原模型 75／987）。AMBER 四组统一用 1,048,576 像素限额重做。两卡输出和逐题评分通过复核。见[完整结果](archive/QWEN3_VQA_SADI_MITIGATION_20261116.md)，产物在服务器 `outputs/qa_benchmarks/qwen3_vqa_sadi_mitigation/`。
 
-最近完成：同批 LLaVA 种子 43 的 100 图尝试把多轮回滚的已知前缀一次性预填充后只续写后缀。逐图时间合计 2032.97→1082.98 秒，回滚生成 1429.51→427.70 秒；最终 caption 92/100 张逐 token 相同，因浮点路径变化不是严格等价替换，CHAIRs 32%→31%、检测器清空 96→95 图。检测与规划重复前向的可合并路径及风险写入[报告](../outputs/generation_time_sar_ems_joint_loop_prefix_seed43/summary.md)和[归档](archive/CURRENT_TASK_generation_time_sar_ems_joint_loop_prefix_seed43_20261115.md)。
+最近完成：将 LLaVA 的 SADI＋SAR/EMS 后层配方原层号迁移至 Qwen3-VL-8B-Instruct。两卡已完成同一独立 60 图的配对生成和评分。相对 Qwen3 SADI，CHAIRs/i 从 23.33%／15.29% 降至 16.67%／1.58%，修复 4 张、新增 0 张幻觉图，召回/F1 降 1.81／1.47 个百分点。大部分 CHAIRi 下降来自一张图的重复幻觉，排除该图两项 CHAIR 仍下降。比同图 Qwen3 SVAR 的召回低 8.82 个百分点。见[报告](archive/QWEN3_SADI_SAR_EMS_TRANSFER_20261116.md)，服务器产物在 `outputs/generation_time_evidence_drift_qwen3/`。
 
-最近完成：按用户纠正，逐头对图像注意力 logit 先取绝对值再求均值，选中区域加 `0.7 × 均值`，FFN 加 `0.4 × 同层完整注意力输出`，只做联合干预；同批 LLaVA 种子 43 的 100 图比较首次处理和最多 32 轮复检回滚。66 图触发；首次 CHAIRs/CHAIRi 为 49%/14.62%，多轮为 32%/9.09%，多轮物体召回 73.53%（贪心 80.54%），536 次回滚且 4 图未清空。见[报告](../outputs/generation_time_sar_ems_joint_loop_absmean_seed43/summary.md)及[归档](archive/CURRENT_TASK_generation_time_sar_ems_joint_loop_absmean_seed43_20261114.md)。
+缓解实验的最新取舍：优先让 CHAIRs 和 CHAIRi 同时低于同图 SVAR，物体召回与 F1 可以小幅下降，继续并列报告绝对幻觉提及。以 SADI 作为优先干预基底，并保留同图 SADI 以检验 SAR/EMS 的单独增益。已复核 SADI 后层版的独立 60 图优势和两批合计，见[复核结果](archive/LLAVA_GENERATION_SAR_EMS_ATTENTION_20261116.md#复核此前两批对照)。
 
-最近完成：按用户要求把局部注意力和 FFN 视觉注入的逐层系数改为固定 `1.7` 与 `0.2`，在同批 LLaVA 种子 43 的 100 张图重跑。66 图触发且全部执行联合修改；联合改写 20 图，CHAIRs 48%→47%，CHAIRi 14.75%→15.74%，物体 F1 75.36%→74.68%。强度增大后改写更多，但整体幻觉没有改善；见[报告](../outputs/generation_time_sar_ems_local_fixed_seed43/summary.md)及[归档](archive/CURRENT_TASK_generation_time_sar_ems_local_fixed_seed43_20261114.md)。
+最近完成：生成时直接迁移 SAR 的投影视觉写入，评估 SPIN、SPARC、VGA 的同图开发 24 图。SVAR＋后层 SPIN 从 24 图扩至 100 图。投影选头相对匹配对照的 CHAIRs/i 从 25.00%／6.13% 降到 23.00%／3.98%，召回／F1 从 69.64%／75.16% 升到 71.35%／77.03%。同图原 SVAR 为 21.00%／5.01% 与 71.86%／78.17%，幻觉提及 34 次对投影版 35 次。候选尚未达到 SVAR 的综合条件，封存图未验证。见[对照与文件](archive/LLAVA_ATTENTION_METHOD_TRANSFER_20261116.md)，服务器产物在 `outputs/generation_time_evidence_drift_llava/pilot/`。
 
-最近完成：按用户纠正，只要检测器触发就同时修改 SAR 局部注意力及 EMS 排序的 3 个 FFN 层；同批 LLaVA 100 图有 66 图触发且全部执行两项修改，联合改写 14 图，CHAIRs 48%→46%，CHAIRi 14.75%→15.38%，论文式总体物体 F1 75.36%→74.96%。见[报告](../outputs/generation_time_sar_ems_local_always_seed43/summary.md)与[归档](archive/CURRENT_TASK_generation_time_sar_ems_local_always_seed43_20261114.md)。
+最近完成：Qwen2.5-VL-7B 和 InternVL2.5-8B 的 CLEVR 方案 B 三协议对照。No-only 按模型答 No 选样，SAM 的 No-only AUROC 分别为 0.9476、0.9445，SAM-V2 为 0.9455、0.9307。三种子共 126 条数据通过完整性核对。见[报告](archive/QA_CLEVR_SCHEME_B_QWEN2_INTERNVL_20261116.md)，服务器产物在 `/root/rivermind-data/ic/outputs/clevr_scheme_b_qwen2_internvl/`。
 
-最近完成：LLaVA 种子 43 的 100 图检测后 SAR 局部注意力、EMS 门控 FFN 视觉注入及联合初试。66 图触发，分别改写 4/7/8 图；CHAIRs 为 47%/48%/47%，CHAIRi 为 14.77%/15.47%/15.38%，均未见可信缓解，逐图还出现词表外幻觉。见[报告](../outputs/generation_time_sar_ems_local_seed43/summary.md)与[归档](archive/CURRENT_TASK_generation_time_sar_ems_local_seed43_20261114.md)。
-
-最近完成：LLaVA 种子 43 前 100 图使用 SAR+EMS 检测器验证集 Hall-F1 阈值 0.4013161 做逐物体循环回滚；66 图触发、760 次回滚，CHAIRs 48%→25%，CHAIRi 14.75%→6.44%，物体召回 80.54%→74.42%。详见[报告](../outputs/generation_time_closed_loop_tau0p4013161_seed43/summary.md)与[归档](archive/CURRENT_TASK_generation_time_closed_loop_train_threshold_seed43_20261114.md)。
-
-最近完成：COCO4000 严格 8:2 下的 LLaVA/Qwen3 三种子 SAR+$E_A$ 对 SAR+$E_F$；原特征逐元素核对及训练协议核对均通过。见[结果](../outputs/log_s_p_source_vector_ablation_82/complete_results.md)与[归档](archive/CURRENT_TASK_log_s_p_source_vector_ablation_82_20261114.md)。
-
-最近完成：SAR+EMS 原阈值 0.6925053 在 LLaVA 种子 43 前 100 图上做与阈值 0.5 相同的逐物体循环；32 张触发，共 200 次回滚，CHAIRs 48%→44%，CHAIRi 14.75%→11.75%。见[报告](../outputs/generation_time_closed_loop_tau0p6925053_seed43/summary.md)与[归档](archive/CURRENT_TASK_generation_time_closed_loop_original_threshold_seed43_20261114.md)。
-
-最近完成：LLaVA 种子 43 前 100 图按用户原意做 SAR+EMS 检测后逐物体循环回滚，阈值 0.5；CHAIRs 48%→35%，CHAIRi 14.75%→9.76%，物体召回 80.54%→77.72%。详见[报告](../outputs/generation_time_closed_loop_tau05_seed43/summary.md)与[归档](archive/CURRENT_TASK_generation_time_closed_loop_tau05_seed43_20261114.md)。
-
-最近完成：LLaVA 与 Qwen3 的 COCO4000 EMS 来源联合实验，比较 attention 输出、FFN 输出及残差对照；五组输入的三种子结果与容量对照已完成。见 [结果](../outputs/log_s_ems_source_union_811/complete_results.md)、[分析](../outputs/log_s_ems_source_union_811/analysis.md)与[归档](archive/CURRENT_TASK_log_s_ems_source_union_811_20261114.md)。
-
-最近完成：SVAR 论文原始 Heads Guided Attention Intervention 在 LLaVA 种子 43 前 100 图上全程生成。论文第 5–18 层、alpha 0.5 将 CHAIRs 48%→23%、CHAIRi 14.75%→4.82%，物体召回 80.54%→71.65%；作者代码实际第 5–17 层结果也已比较。详见[报告](../outputs/generation_time_svar_official_seed43/summary.md)与[归档](archive/CURRENT_TASK_generation_time_svar_official_seed43_20261114.md)。
-
-最近完成：三篇论文方法 VCD、DeCo、ICD 的 LLaVA 种子 43 前 100 图检测门控单步迁移，分别接入 SAR+EMS 与原生 SVAR。六组完整评测；唯一 CHAIRs 改善为 SAR+EMS + DeCo 的 48%→47%，CHAIRi 未下降。详见[报告](../outputs/generation_time_paper_transfer_seed43/summary.md)与[归档](archive/CURRENT_TASK_generation_time_paper_transfer_seed43_20261114.md)。
-
-最近完成：按用户要求停止无检测门控的两模型 200 图实验，转而完成 LLaVA 种子 43、前 100 图的检测门控强残差试验。联合干预 CHAIRs 与原始贪心同为 48%，仅注意力干预的 CHAIRi 从 14.75% 升至 16.77%。详见 [报告](../outputs/generation_time_gated_residual_seed43/summary.md)与[归档](archive/CURRENT_TASK_generation_time_gated_residual_seed43_20261114.md)。
-
-最近完成：LLaVA 与 Qwen3 的 COCO4000 EMS 源分布向量对照；四种 $P$ 构造的全量提取、三种子训练及数值对齐均完成。详见 [结果](../outputs/log_s_p_source_vector_ablation_811/complete_results.md)与[归档](archive/CURRENT_TASK_log_s_p_source_vector_ablation_811_20261114.md)。
-
-最近完成：种子 43 的 generation-time SAR+EMS 三方法试验，两模型各 400 张 COCO 测试图。详见 [报告](../outputs/generation_time_sar_ems_seed43_v2/summary.md)与[归档](archive/CURRENT_TASK_generation_time_sar_ems_seed43_20261114.md)。
-
-最近完成：Qwen3 COCO 8:2 三种子 SAR+EMS 对原生 SVAR 的配对图片级显著性检验。结果见 [报告](../outputs/log_s_ours_svar_significance_82/summary.md)，过程见 [归档](archive/CURRENT_TASK_log_s_ours_svar_significance_82_20261114.md)。
+更早已完成记录见[本次发布时的任务归档](archive/CURRENT_TASK_mitigate_upload_20261117.md)及 `docs/archive/`。

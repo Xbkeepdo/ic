@@ -1926,9 +1926,9 @@ def _train_svar(
     }
     seed = int(cfg.get("seed", 42))
     strict_82 = bool(cfg.get("_strict_82_no_validation", False))
-    # Seed before module construction so the requested run seed controls both
-    # SVAR's initial weights and the subsequent minibatch order.
-    _seed_everything(seed)
+    # Seed before module construction. The optional training seed is applied
+    # inside train_torch_detector after construction to fix minibatch order.
+    _seed_everything(int(cfg.get("initialization_seed", seed)))
     model = SVARMLP(
         matrices["train"][0].shape[1],
         hidden_dim=int(_setting(svar_cfg, "hidden_dim", "hidden_size", default=248)),
@@ -1950,7 +1950,7 @@ def _train_svar(
         early_stopping_patience=int(
             svar_cfg.get("early_stopping_patience", 5)
         ),
-        seed=seed,
+        seed=int(cfg.get("training_seed", seed)),
         positive_class=positive_class,
         strict_82_no_validation=bool(
             cfg.get("_strict_82_no_validation", False)

@@ -1,0 +1,27 @@
+# SAM and controlled SVAR, at first-answer-before and queried-object-before.
+# Prepared-root can be overridden per model after Yes-only labeling.
+extends: model_configs_qa_logs_k32_tau003.yaml
+
+qa_benchmarks:
+  extraction_mode: "all"
+  baseline_label_protocols: ["object_hallucination_yes_only"]
+  position_protocols: ["prompt_last_token", "question_object_pre_token"]
+  prepared_root: "/root/rivermind-data/dataset/qa_sam_svar_base"
+  output_root: "/root/rivermind-data/ic-ac/outputs/qa_benchmarks"
+  pope_dir: "/root/rivermind-data/dataset/pope"
+  coco_image_dir: "/root/rivermind-data/dataset/coco/val2014"
+  amber_root: "/root/rivermind-data/dataset/AMBER"
+
+models:
+  llava_1_5_7b:
+    hf_name: "/root/rivermind-data/models/llava_1_5_7b"
+  qwen3_vl_8b:
+    hf_name: "/root/rivermind-data/models/qwen3_vl_8b"
+
+feature_extraction:
+  baseline:
+    methods: ["svar"]
+
+training:
+  baseline:
+    methods: ["svar"]

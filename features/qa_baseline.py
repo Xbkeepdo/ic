@@ -339,7 +339,7 @@ class QABaselineAdapter:
             "label_field": QA_LABEL_FIELDS[self.label_protocol],
         }
         if "svar" in record.get("baselines", {}):
-            metadata["svar_protocol"] = "qa_controlled_prompt_last_token"
+            metadata["svar_protocol"] = f"qa_controlled_{position}"
         validate_baseline_record(record, required=self.runtime.methods)
         return record
 
