@@ -1,0 +1,12 @@
+{
+  "server_protocol_hashes_checked": 23,
+  "local_differences_archived_without_overwrite": [
+    "scripts/generation_time_sar_ems_seed43.py",
+    "coco-labeling/coco_chair.py",
+    "models/qwen3_vl_wrapper.py",
+    "configs/model_configs_coco4000_512_endac_baselines_v2.yaml"
+  ],
+  "note": "Server files and the frozen server protocol define this experiment; archived differing source is for reproduction.",
+  "normalized_text_equal_for_all_archived_sources": true,
+  "difference_explanation": "Raw hashes differ only by line endings; UTF-8 decoded and newline-normalized text is identical for all four files."
+}

@@ -1,0 +1,42 @@
+{
+  "batch_policy": "same visual span and prompt length; retain smaller tail groups; paired OOM split is recorded",
+  "batch_size_limit": 16,
+  "do_sample": false,
+  "dtype": "bfloat16",
+  "generation_order": "sorted image IDs, stride-2 shard assignment",
+  "images_per_shard": 100,
+  "max_new_tokens": 512,
+  "model": "Qwen3-VL-8B-Instruct",
+  "prompt": "Describe this image.",
+  "recipe": {
+    "base_layers": [
+      5,
+      18
+    ],
+    "ffn_layer": 20,
+    "late_layers": [
+      21,
+      22
+    ],
+    "strength": 5,
+    "svar_strength": 0.5,
+    "tau": 0.03,
+    "write_layer": 18
+  },
+  "selected_sha256": "8049a9f2f9adcb32f046ec1549f3fd9d38aedcd3fe70fac12d4ef0c33b50955c",
+  "shards": 2,
+  "source_sha256": {
+    "configs/model_configs_coco4000_512_endac_baselines_v2.yaml": "8f99b24dd6533014a1f32028723ce03526d6b9c89ceb622af6c63b2990527222",
+    "features/llava_decoding_evidence.py": "9c11041be9293d01e90d74203990fa71d2597fccc45b4844c4690771232758e7",
+    "features/llava_sar_ems_attention.py": "0fd5a028b6d4e8ea206b3c87a569747dd6185d9db671ebc90d8f36c268e3050e",
+    "features/qwen3_sar_ems_attention.py": "cf5393a8ff409f72a89c4dba96ba43532a0c9e9de073f9fbf89f26d4b8d75349",
+    "features/qwen3_sar_ems_attention_batch.py": "b8993f2bd2bc539f4d9c68e392cea11dc6767addc26b024f10dea4306383f8d4",
+    "models/qwen3_vl_wrapper.py": "51ebacea3f91c45e2a4e9a5a62d82131ac04f6ce22c212db0114d67175ba3e39",
+    "scripts/generation_time_evidence_drift_qwen3_batched.py": "34c6695b0170a8de2b8fbe4c019946360900bfaef4ed4e5bdd54807d5210e65d",
+    "scripts/generation_time_sar_ems_seed43.py": "4d003d0d109f848909d517a0a1226b9c6807774f8a496d2757e4ae96009df2c9"
+  },
+  "variants": [
+    "svar",
+    "svar_sar_ems_attention"
+  ]
+}

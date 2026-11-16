@@ -34,6 +34,10 @@ CHAIRs 为含幻觉物体的描述比例。CHAIRi 以全部图的幻觉提及总
 
 ## 产物
 
+2026-11-17 补充核对共同未触顶子集：334 图中 SADI／增强版的幻觉图为 102／94，修复 15 张、新增 7 张；被排除的 166 图为 31／36，修复 5 张、新增 10 张。前一部分净减少 8 张，后一部分净增加 5 张，完整 500 图净减少 3 张。因此，子集 CHAIRs 下降 2.40 个百分点与全量下降 0.60 并不矛盾。334 图不是独立新测试集，而是由三种方法生成长度共同定义的敏感性分析集。
+
+334 图上，增强版减去 SADI 的按图配对 bootstrap 95% 区间（5,000 次、seed 43）为：CHAIRs [−5.09, +0.30]、CHAIRi [−1.51, +0.08]、F1 [−0.70, +1.48] 个百分点，均跨零。相对 SVAR 的 CHAIRs 大部分下降来自 SADI 基底；新增模块的 CHAIRs 降幅为 2.40 个百分点。增强版相对 SVAR 的召回／F1 仍低 7.78／3.63 个百分点。仅删除单个异常图与保留共同未触顶 334 图是不同的筛选，不能混为同一敏感性分析。
+
 服务器实验根目录为 `/root/rivermind-data/ic-ac/outputs/generation_time_evidence_drift_qwen3_coco500/`。图像清单为 `cohort.json` 和 `selection.json`，配置和源文件哈希为 `protocol.json`。主评分在 `coco500/metrics.first500.sadi-sadi_sar_ems_attention-svar.json`，逐图评分在同目录的 `chair_per_image.first500.sadi-sadi_sar_ems_attention-svar.jsonl`，原始描述为各方法的 `*.shard*.jsonl`。根目录的 `sensitivity.first500.json` 和 `protocol_validation.first500.json` 分别记录未触顶子集和逐图协议校验。
 
 ## 200、300、400、500 张嵌套子集

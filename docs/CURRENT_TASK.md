@@ -1,23 +1,19 @@
 # 当前任务
 
-发布：按用户要求创建 GitHub `Xbkeepdo/ic` 的 `mitigate` 分支，保存当前源码、配置与实验记录。独立工作区为 `../ic-mitigate-upload`，保留 `ac` 工作区和运行中的两卡实验。500 图单图启动与评估脚本、图片清单已归档在 `scripts/experiment_snapshots/qwen3_single500/`；使用说明见该分支的 `docs/MITIGATION.md`。
+生成与修正评分均已完成（2026-11-17）：Qwen3 SADI＋当前层→下一层，新200图，max_new_tokens256。400条描述未重跑。独立审计发现旧CHAIR整段Treebank分词漏计多句文本中chairs.等物体词，已在独立目录进行Punkt分句→逐句Treebank的CPU重评分，GT与预测同时修正、新建GT缓存，原文件哈希未变。当前最终结果必须使用修正口径。
 
-进行中：用户已要求单图推理复验。Qwen3 的原 SVAR 与 SVAR＋SAR/EMS 在原固定 500 张图上以 batch size 1 生成，两卡各处理 250 张。使用项目提示词 `Describe this image.`、BF16、greedy、512 token 上限，聚合原随机顺序的 100／200／300／400／500 子集。新输出根目录为服务器 `outputs/generation_time_evidence_drift_qwen3_single500/`，完整生成后自动评分。
+修正主结果（CHAIRs／CHAIRi／召回／F1）：SADI23.00／4.878／71.73／75.93%；next21.00／4.869／71.49／76.09%。幻觉图46→42，修复8/新增4；幻觉提及86→80，总提及1763→1643。四主指标95%配对区间均跨0：CS[-5.50,+1.50]pp；CI[-1.197,+1.129]pp；召回[-1.555,+1.033]pp；F1[-1.170,+1.481]pp。CHAIRs温和正向点估计，CHAIRi基本无改善，不能宣称稳定显著收益。
 
-最近完成：Qwen3 的 SVAR＋SAR/EMS 后层注意力扩至原 COCO 500 图，复用原批次和 SVAR 缓存。首批逐 token 一致、全部逐图批次匹配。CHAIRs/i 从 40.80%／9.03% 升到 41.20%／9.39%，F1 从 77.43% 降到 76.78%，幻觉提及 361→374，修复 21 张、新增 23 张。差值区间跨零，共同未触顶 493 图同方向。新臂未在 500 图上改善原 SVAR。[完整结果](archive/QWEN3_SADI_SAR_EMS_COCO500_20261116.md)，服务器主评分为 `outputs/generation_time_evidence_drift_qwen3_coco500/coco500/metrics.first500.svar-svar_sar_ems_attention.json`。
+最大减少图187169的11→4（table重复10→3，sailboat均1）超过全量净减少6次。去掉此图199张：CHAIRs22.61→20.60%，CHAIRi4.29→4.64%反转，幻觉75→76。该图next原漏计chair1已恢复，SADI chair4不变；新GT缓存重建后200图GT物体集合均无变化。共同未触顶99图修正CS18.18→16.16%、CI5.31→5.05%、F175.37→75.87%；112图B16修正CI3.63→3.77%；均补充、区间跨0。
 
-最近完成：解释 SADI 与 SAR/EMS 后层改造，并起草含 COCO 500 图指标的英文 rebuttal。Qwen3 的 SVAR＋同后层配方完成原随机顺序前 100 图配对，CHAIRs/i 从 44.00%／10.44% 降到 40.00%／9.28%，F1 从 75.57% 升到 76.38%，幻觉提及 79→68，修复 8 张、新增 4 张。差值区间均跨零。两卡两组在相同新批次重新生成，200 条描述与逐图评分通过核对。[完整结果](archive/QWEN3_SVAR_SAR_EMS_COCO100_20261117.md)，服务器产物在 `outputs/generation_time_evidence_drift_qwen3_svar100/`。
+最终报告：docs/archive/QWEN3_SADI_NEXT200_T256_SENTENCE_EVAL_20261117.md。原冻结结果存档：docs/archive/QWEN3_SADI_NEXT200_T256_20261117.md（旧CS22→20，CI4.78→4.30等不能继续作为修正后结论）。本次只修正当前200；旧100/500尚未重评，不能混用评估口径。
 
-最近完成：Qwen3-VL 的 SADI＋SAR/EMS 原后层配方在新增 COCO 500 图上的复验。三组同图批量解码和逐图评分已核对。后层版／SADI／SVAR 的 CHAIRs 分别为 26.00%／26.60%／40.80%，CHAIRi 为 5.01%／5.58%／9.03%。按原随机顺序复用逐图评分，已核对 200、300、400、500 张嵌套子集。后层版相对 SADI 的 CHAIR 差值区间在四档均跨零，第 376 张决定了 400、500 张上的 CHAIRi 差值方向。后层版相对 SVAR 的全量召回和 F1 低 8.85／5.16 个百分点。见[完整结果](archive/QWEN3_SADI_SAR_EMS_COCO500_20261116.md)，产物在服务器 `outputs/generation_time_evidence_drift_qwen3_coco500/`。
+服务器生成根目录：/root/rivermind-data/ic-ac/outputs/generation_time_evidence_drift_qwen3_next200_t256_b16/。修正输出为该目录下sentence_tokenized_evaluation_v1/，含coco200/metrics.first200.sadi-sadi_sar_ems_next_19_20.json、逐图分数、新GTcache、tokenizer_fix_audit.json、microtests.json、provenance.json。独立corrected_audit.json全部复核PASS，400raw SHA、GT集合、主指标及bootstrap/补充/分母排除均一致。本地相同结构在C:/Users/xbo/AppData/Local/Temp/qwen3_next200_t256_checked/。原评分/400 raw/旧cache/全部冻结源码前后SHA相同。修正脚本scripts/evaluate_qwen3_next200_sentence_tokenized.py；不改旧CHAIR源码，保持原POS/lemma/同义词/指标公式及绝对字符偏移，单句/Unicode/中间句末微测通过。
 
-最近完成：Qwen3-VL 的 VQA 幻觉缓解。POPE 600、AMBER existence 987 题，原 caption 版 SAR/EMS 两组均触发 0 次，输出逐 token 等于 SADI。问题实体适配版触发 572／948 题，POPE 答案全相同、误报 23／300，AMBER 只新增 1 个错误 Yes（SADI 79／987，适配 80／987，原模型 75／987）。AMBER 四组统一用 1,048,576 像素限额重做。两卡输出和逐题评分通过复核。见[完整结果](archive/QWEN3_VQA_SADI_MITIGATION_20261116.md)，产物在服务器 `outputs/qa_benchmarks/qwen3_vqa_sadi_mitigation/`。
+生成协议：SADI零起5–18；next Q18/P18→A19、Q19/P19→A20；强度5/tau0.03/noun+positive-gain固定。greedy、BF16、Describe this image.，两臂显式256。2卡各100，33个匹配batch，max16，实际112图B16；无OOM/Traceback。两组各90图达256。198图触发、2352生成步/2832逐图逐层事件、140序列改变，无同层重算。
 
-最近完成：将 LLaVA 的 SADI＋SAR/EMS 后层配方原层号迁移至 Qwen3-VL-8B-Instruct。两卡已完成同一独立 60 图的配对生成和评分。相对 Qwen3 SADI，CHAIRs/i 从 23.33%／15.29% 降至 16.67%／1.58%，修复 4 张、新增 0 张幻觉图，召回/F1 降 1.81／1.47 个百分点。大部分 CHAIRi 下降来自一张图的重复幻觉，排除该图两项 CHAIR 仍下降。比同图 Qwen3 SVAR 的召回低 8.82 个百分点。见[报告](archive/QWEN3_SADI_SAR_EMS_TRANSFER_20261116.md)，服务器产物在 `outputs/generation_time_evidence_drift_qwen3/`。
+seed43排除旧5350图（包括前100），35154候选抽200，与9来源零重合。ID SHA3e59a3aa06cffca8e671fe3a4467ccb8bc96f353c98d293139abf963c168ab1d，23源码hash冻结，13推理源码/config复用旧GPU验证未重测。快照scripts/experiment_snapshots/qwen3_next200_t256_b16/，原controller/generate_group不改。local/server四旧文件rawhash差异仅换行，规范文本相同，server字节副本已存server_sources。
 
-缓解实验的最新取舍：优先让 CHAIRs 和 CHAIRi 同时低于同图 SVAR，物体召回与 F1 可以小幅下降，继续并列报告绝对幻觉提及。以 SADI 作为优先干预基底，并保留同图 SADI 以检验 SAR/EMS 的单独增益。已复核 SADI 后层版的独立 60 图优势和两批合计，见[复核结果](archive/LLAVA_GENERATION_SAR_EMS_ATTENTION_20261116.md#复核此前两批对照)。
+生成北京时间07:05:56→07:17:06约11分10秒，原评分07:17:19完成约11分22秒。后续额外仅CPU评分，无GPU重生成。两臂累计GPU进程生成611.96/664.57秒（next+8.6%，受长度影响、不是墙钟）。本轮源码、配置、实验快照和报告已同步到 GitHub 的 `mitigate` 分支。复现入口见 [缓解实验说明](MITIGATION.md)。旧历史见docs/archive/CURRENT_TASK_before_next200_t256_20261117.md。
 
-最近完成：生成时直接迁移 SAR 的投影视觉写入，评估 SPIN、SPARC、VGA 的同图开发 24 图。SVAR＋后层 SPIN 从 24 图扩至 100 图。投影选头相对匹配对照的 CHAIRs/i 从 25.00%／6.13% 降到 23.00%／3.98%，召回／F1 从 69.64%／75.16% 升到 71.35%／77.03%。同图原 SVAR 为 21.00%／5.01% 与 71.86%／78.17%，幻觉提及 34 次对投影版 35 次。候选尚未达到 SVAR 的综合条件，封存图未验证。见[对照与文件](archive/LLAVA_ATTENTION_METHOD_TRANSFER_20261116.md)，服务器产物在 `outputs/generation_time_evidence_drift_llava/pilot/`。
-
-最近完成：Qwen2.5-VL-7B 和 InternVL2.5-8B 的 CLEVR 方案 B 三协议对照。No-only 按模型答 No 选样，SAM 的 No-only AUROC 分别为 0.9476、0.9445，SAM-V2 为 0.9455、0.9307。三种子共 126 条数据通过完整性核对。见[报告](archive/QA_CLEVR_SCHEME_B_QWEN2_INTERNVL_20261116.md)，服务器产物在 `/root/rivermind-data/ic/outputs/clevr_scheme_b_qwen2_internvl/`。
-
-更早已完成记录见[本次发布时的任务归档](archive/CURRENT_TASK_mitigate_upload_20261117.md)及 `docs/archive/`。
+CPU探针首次尝试PunktTokenizer新API不适配服务器旧NLTK，改nltk.data.load('tokenizers/punkt/english.pickle')成功；未修改依赖。所有原始与修正评估产物分别保留。

@@ -27,6 +27,8 @@ Qwen3 上，后层模块相对 SADI 改变 42 张的生成序列，修复 4 张�
 
 ## 实现与验证
 
+2026-11-17 核对原始记录：Qwen3 三臂各有 60 张唯一图片，均为 `native_qwen3_generate` 单图生成，图像清单一致。此 60 图与后续新增 500 图重合数为 0。后续 500 图使用动态批量推理，因此 60 图与 500 图同时改变了图片集合与推理协议。60 图的 CHAIRs 改善对应 4 张修复、0 张新增；500 图为 20 张修复、17 张新增。60 图仅有 4 对不一致样本，精确双侧 McNemar 检验 p=0.125；原 percentile bootstrap 区间不能据此解释成稳健显著增益。重复幻觉图 379162 对 CHAIRs 仅贡献一张图，其主要影响是 CHAIRi。目前证据支持这批 60 图上的有利点估计，尚不支持稳定提升约 7 个百分点。
+
 第 5 层的合成 GQA 检查通过，复算了 SVAR 和 SADI 的最后查询 logits、softmax、输出，确认更早查询保持一致。真实运行的首批动态视觉范围、WordNet 触发频率和逐步后层调用数得到复核。增强版要求每次触发对应第 21、22 层各一次调用，生成步数必须与输出 token 数对应。第一次日志检查对多个文件使用 `tail -12` 报参数错误，改用 SFTP 读取日志。 [干预代码](../../features/qwen3_sar_ems_attention.py) · [生成入口](../../scripts/generation_time_evidence_drift_qwen3.py)
 
 服务器产物位于 `/root/rivermind-data/ic-ac/outputs/generation_time_evidence_drift_qwen3/`。配置和图像清单为 `protocol.json` 和 `cohort.json`。三臂的逐图生成和指标位于 `rebuttal_holdout/`，其中 `metrics.first60.sadi-sadi_sar_ems_attention-svar.json` 指向逐图 CHAIR，日志位于 `logs/`。跨模型配对 bootstrap 与未触顶分析保存在 `cross_model_increment.first60.json`。
