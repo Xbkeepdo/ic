@@ -27,3 +27,6 @@ logs/
 .DS_Store
 .vscode/
 .idea/
+
+# Generated experiment snapshots; selected small records remain tracked.
+scripts/experiment_snapshots/

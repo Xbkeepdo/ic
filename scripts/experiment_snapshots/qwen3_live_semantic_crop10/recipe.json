@@ -1,0 +1,185 @@
+{
+  "fixed_at": 1795150976.9703188,
+  "groups": [
+    {
+      "ids": [
+        11320,
+        60409,
+        243882,
+        517674,
+        549410,
+        575293
+      ],
+      "source_shard": 0,
+      "visual_tokens": 192,
+      "cases": [
+        {
+          "image_id": 243882,
+          "step": 4,
+          "token_id": 1697,
+          "canonical": "person",
+          "automatic_hallucination": false,
+          "row": 2,
+          "cached_p_real": 0.7208172082901001,
+          "reference_gate_positive": false
+        },
+        {
+          "image_id": 243882,
+          "step": 7,
+          "token_id": 2311,
+          "canonical": "book",
+          "automatic_hallucination": false,
+          "row": 2,
+          "cached_p_real": 0.3920656740665436,
+          "reference_gate_positive": true
+        },
+        {
+          "image_id": 243882,
+          "step": 27,
+          "token_id": 1965,
+          "canonical": "dining table",
+          "automatic_hallucination": true,
+          "row": 2,
+          "cached_p_real": 0.9380507469177246,
+          "reference_gate_positive": false
+        }
+      ]
+    },
+    {
+      "ids": [
+        353411,
+        377003,
+        435783,
+        486484
+      ],
+      "source_shard": 0,
+      "visual_tokens": 300,
+      "cases": [
+        {
+          "image_id": 353411,
+          "step": 24,
+          "token_id": 27874,
+          "canonical": "sandwich",
+          "automatic_hallucination": false,
+          "row": 0,
+          "cached_p_real": 0.06042005121707916,
+          "reference_gate_positive": true
+        },
+        {
+          "image_id": 353411,
+          "step": 97,
+          "token_id": 22435,
+          "canonical": "fork",
+          "automatic_hallucination": true,
+          "row": 0,
+          "cached_p_real": 0.3215200901031494,
+          "reference_gate_positive": true
+        },
+        {
+          "image_id": 353411,
+          "step": 114,
+          "token_id": 1697,
+          "canonical": "person",
+          "automatic_hallucination": false,
+          "row": 0,
+          "cached_p_real": 0.13651052117347717,
+          "reference_gate_positive": true
+        }
+      ]
+    }
+  ],
+  "cohort": "coco10",
+  "images": 10,
+  "source": "/root/rivermind-data/ic-ac/outputs/qwen3_clva_signal_preflight10_v2_20261120",
+  "candidates": [
+    "semantic_crop",
+    "semantic_crop_route",
+    "shifted_crop"
+  ],
+  "variants": [
+    "sadi",
+    "svar",
+    "semantic_crop",
+    "semantic_crop_route",
+    "shifted_crop"
+  ],
+  "copied_controls": [
+    "sadi",
+    "svar"
+  ],
+  "max_new_tokens": 512,
+  "base_layers": [
+    5,
+    6,
+    7,
+    8,
+    9,
+    10,
+    11,
+    12,
+    13,
+    14,
+    15,
+    16,
+    17,
+    18
+  ],
+  "source_layer": 19,
+  "action_layers": [
+    20,
+    21,
+    22,
+    23,
+    24,
+    25,
+    26,
+    27,
+    28,
+    29,
+    30,
+    31,
+    32,
+    33,
+    34,
+    35
+  ],
+  "eligibility": "All frozen309 object tokens; active rows; class absent from generated prefix; native source19 target gain>0; nearest1 head-class rival rho>max(1,rho_y). No learned detector, GT or hand-selected trigger positions.",
+  "action": "Full SADI5--18. Early3 no-I positive rival difference selects3x3 crop448. Blend original image/DeepStack features by native D; replace visualKV20--35 only for current-query replay. Optional fixed19 attention routing; no FFN/logit editing.",
+  "acceptance": "Greedy token changes and original-target logp decreases. Commit accepted final hidden and all20--35 currentKV after evaluating every row against original native cache; restore visual slots and history.",
+  "scope": "Complete10 known development screen; inspect actual object errors and recall/F1. Promising result advances to complete100, then independent500. Original WCOST detector unchanged; D is a Hellinger proxy.",
+  "preflight": "GPU1 native128 matches copied SADI; zero/reject tokens/logits/current36/full36 KV exact; live crop commits checked by exact readback. No first-word flip is an efficacy claim.",
+  "development_screen": "Vs SADI lower Cs/Ci and hallucinated count, F1 loss<=1.5pp and recall loss<=2pp, changes beyond one loop/denominator or unsupported object-word substitution.",
+  "policies": [
+    "crop_only",
+    "crop_and_route",
+    "shifted_crop"
+  ],
+  "scopes": {
+    "next20": [
+      20
+    ],
+    "fixed_tail20_35": [
+      20,
+      21,
+      22,
+      23,
+      24,
+      25,
+      26,
+      27,
+      28,
+      29,
+      30,
+      31,
+      32,
+      33,
+      34,
+      35
+    ]
+  },
+  "strength": 5.0,
+  "budget": "5*D*tanh(G/2)*f/span(f) ifG>0 else0; D=HellingerSquared(Q,P). Relative f=(Q-P)/(Q+P), absolute f=Q-P, shifted=half-span rolled relative, opposite=negative relative. Same peak-to-peak amplitude when span>1e-6.",
+  "derived_for_publication": true,
+  "original_protocol_sha256": "b94223cb930ed00a98eaf3319c0c1b354f1308ef139551c42f3eab70cd280220",
+  "note": "Readable recipe only. Full frozen protocol and generated data remain in server outputs; not a replacement execution protocol."
+}

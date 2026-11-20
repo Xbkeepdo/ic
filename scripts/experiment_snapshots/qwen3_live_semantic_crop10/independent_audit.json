@@ -1,0 +1,142 @@
+{
+  "passed": true,
+  "checks": 530,
+  "new_model_calls": 0,
+  "changed_images": {
+    "semantic_crop": [
+      353411
+    ],
+    "semantic_crop_route": [],
+    "shifted_crop": []
+  },
+  "accepted": {
+    "semantic_crop": 1,
+    "semantic_crop_route": 0,
+    "shifted_crop": 0
+  },
+  "all_candidate_per_image_object_scores_equal_sadi": true,
+  "metrics": {
+    "sentence": {
+      "sadi": {
+        "chair_s": 0.5,
+        "chair_i": 0.20930232558139536,
+        "object_recall": 0.7583333333333333,
+        "object_f1": 0.777077922077922,
+        "hallucinated_mentions": 18,
+        "object_mentions": 86
+      },
+      "svar": {
+        "chair_s": 0.6,
+        "chair_i": 0.07228915662650602,
+        "object_recall": 0.7125,
+        "object_f1": 0.7028571428571427,
+        "hallucinated_mentions": 6,
+        "object_mentions": 83
+      },
+      "semantic_crop": {
+        "chair_s": 0.5,
+        "chair_i": 0.20930232558139536,
+        "object_recall": 0.7583333333333333,
+        "object_f1": 0.777077922077922,
+        "hallucinated_mentions": 18,
+        "object_mentions": 86
+      },
+      "semantic_crop_route": {
+        "chair_s": 0.5,
+        "chair_i": 0.20930232558139536,
+        "object_recall": 0.7583333333333333,
+        "object_f1": 0.777077922077922,
+        "hallucinated_mentions": 18,
+        "object_mentions": 86
+      },
+      "shifted_crop": {
+        "chair_s": 0.5,
+        "chair_i": 0.20930232558139536,
+        "object_recall": 0.7583333333333333,
+        "object_f1": 0.777077922077922,
+        "hallucinated_mentions": 18,
+        "object_mentions": 86
+      }
+    },
+    "legacy": {
+      "sadi": {
+        "chair_s": 0.5,
+        "chair_i": 0.21428571428571427,
+        "object_recall": 0.7583333333333333,
+        "object_f1": 0.777077922077922,
+        "hallucinated_mentions": 18,
+        "object_mentions": 84
+      },
+      "svar": {
+        "chair_s": 0.5,
+        "chair_i": 0.0641025641025641,
+        "object_recall": 0.7125,
+        "object_f1": 0.7123809523809522,
+        "hallucinated_mentions": 5,
+        "object_mentions": 78
+      },
+      "semantic_crop": {
+        "chair_s": 0.5,
+        "chair_i": 0.21428571428571427,
+        "object_recall": 0.7583333333333333,
+        "object_f1": 0.777077922077922,
+        "hallucinated_mentions": 18,
+        "object_mentions": 84
+      },
+      "semantic_crop_route": {
+        "chair_s": 0.5,
+        "chair_i": 0.21428571428571427,
+        "object_recall": 0.7583333333333333,
+        "object_f1": 0.777077922077922,
+        "hallucinated_mentions": 18,
+        "object_mentions": 84
+      },
+      "shifted_crop": {
+        "chair_s": 0.5,
+        "chair_i": 0.21428571428571427,
+        "object_recall": 0.7583333333333333,
+        "object_f1": 0.777077922077922,
+        "hallucinated_mentions": 18,
+        "object_mentions": 84
+      }
+    }
+  },
+  "coverage": {
+    "image_class_cases": 5,
+    "positive_gain_logged": 3,
+    "semantic_eligible": 2,
+    "rows": [
+      {
+        "image_id": 11320,
+        "false_class": "car",
+        "positive_gain_prefix_novel_logged": false,
+        "semantic_eligible": false
+      },
+      {
+        "image_id": 243882,
+        "false_class": "dining table",
+        "positive_gain_prefix_novel_logged": false,
+        "semantic_eligible": false
+      },
+      {
+        "image_id": 353411,
+        "false_class": "fork",
+        "positive_gain_prefix_novel_logged": true,
+        "semantic_eligible": true
+      },
+      {
+        "image_id": 377003,
+        "false_class": "dining table",
+        "positive_gain_prefix_novel_logged": true,
+        "semantic_eligible": true
+      },
+      {
+        "image_id": 575293,
+        "false_class": "chair",
+        "positive_gain_prefix_novel_logged": true,
+        "semantic_eligible": false
+      }
+    ]
+  },
+  "decision": "Close this candidate: nap rewrite retains fork in the full caption; no100 or500 advancement."
+}

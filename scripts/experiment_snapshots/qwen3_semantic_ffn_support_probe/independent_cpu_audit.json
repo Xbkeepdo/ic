@@ -1,0 +1,14 @@
+{
+  "passed": true,
+  "checks": 17,
+  "cases": 6,
+  "comparisons": 30,
+  "nonzero_ffn_branches": 4,
+  "unchanged_native_choices": 30,
+  "actual_bf16_delta_norm_range": [
+    0.1094144955277443,
+    0.11890632659196854
+  ],
+  "intended_fp32_delta_norm": 0.10593340210449607,
+  "new_model_calls": 0
+}
